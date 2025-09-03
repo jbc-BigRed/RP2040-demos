@@ -124,8 +124,9 @@ static void alarm_irq(void) {
             current_amplitude_0 = (current_amplitude_0 - decay_inc) ;
         }
 
-        // Mask with DAC control bits
-        DAC_data_0 = (DAC_config_chan_B | (DAC_output_0 & 0xffff))  ;
+        // Mask with DAC control bits, config_chan is the output channel of the
+        // DAC
+        DAC_data_0 = (DAC_config_chan_A | (DAC_output_0 & 0xffff))  ;
 
         // SPI write (no spinlock b/c of SPI buffer)
         spi_write16_blocking(SPI_PORT, &DAC_data_0, 1) ;
