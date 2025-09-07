@@ -38,15 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "pico/multicore.h"
-#include "hardware/pio.h"
-#include "hardware/dma.h"
 #include "hardware/clocks.h"
-
-// VGA graphics library
-#include "vga16_graphics_v2.h"
-#include "pt_cornell_rp2040_v1_4.h"
-
-// Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
 
 // Low-level alarm infrastructure we'll be using
@@ -267,6 +259,10 @@ static PT_THREAD (protothread_core_0(struct pt *pt))
 // dds main
 // Core 0 entry point
 int main() {
+
+    // Overclock 
+    set_sys_clock_khz(150000, true) ;
+
     // Initialize stdio/uart (printf won't work unless you do this!)
     stdio_init_all();
     printf("Hello, friends!\n");
@@ -297,6 +293,18 @@ int main() {
     gpio_set_dir(LED, GPIO_OUT) ;
     gpio_put(LED, 0) ;
 
+    ////////////////// KEYPAD INITS ///////////////////////
+    // Initialize the keypad GPIO's
+    gpio_init_mask((0x7F << BASE_KEYPAD_PIN)) ;
+    // Set row-pins to output
+    gpio_set_dir_out_masked((0xF << BASE_KEYPAD_PIN)) ;
+    // Set all output pins to low
+    gpio_put_masked((0xF << BASE_KEYPAD_PIN), (0x0 << BASE_KEYPAD_PIN)) ;
+    // Turn on pulldown resistors for column pins (on by default)
+    gpio_pull_down((BASE_KEYPAD_PIN + 4)) ;
+    gpio_pull_down((BASE_KEYPAD_PIN + 5)) ;
+    gpio_pull_down((BASE_KEYPAD_PIN + 6)) ;
+
     // set up increments for calculating bow envelope
     attack_inc = divfix(max_amplitude, int2fix15(ATTACK_TIME)) ;
     decay_inc =  divfix(max_amplitude, int2fix15(DECAY_TIME)) ;
@@ -316,40 +324,6 @@ int main() {
     irq_set_enabled(ALARM_IRQ, true) ;
     // Write the lower 32 bits of the target time to the alarm register, arming it.
     timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
-
-    // Add core 0 threads
-    pt_add_thread(protothread_core_0) ;
-
-    // Start scheduling core 0 threads
-    pt_schedule_start ;
-
-}
-
-// keypad main
-int main() {
-
-    // Overclock
-    set_sys_clock_khz(150000, true) ;
-
-    // Initialize stdio
-    stdio_init_all();
-
-    // Map LED to GPIO port, make it low
-    gpio_init(LED) ;
-    gpio_set_dir(LED, GPIO_OUT) ;
-    gpio_put(LED, 0) ;
-
-    ////////////////// KEYPAD INITS ///////////////////////
-    // Initialize the keypad GPIO's
-    gpio_init_mask((0x7F << BASE_KEYPAD_PIN)) ;
-    // Set row-pins to output
-    gpio_set_dir_out_masked((0xF << BASE_KEYPAD_PIN)) ;
-    // Set all output pins to low
-    gpio_put_masked((0xF << BASE_KEYPAD_PIN), (0x0 << BASE_KEYPAD_PIN)) ;
-    // Turn on pulldown resistors for column pins (on by default)
-    gpio_pull_down((BASE_KEYPAD_PIN + 4)) ;
-    gpio_pull_down((BASE_KEYPAD_PIN + 5)) ;
-    gpio_pull_down((BASE_KEYPAD_PIN + 6)) ;
 
     // Add core 0 threads
     pt_add_thread(protothread_core_0) ;
