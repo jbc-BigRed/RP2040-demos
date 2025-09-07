@@ -29,9 +29,11 @@ pico_sdk_init()
 add_executable(Audio_Beep_Synth_Single_Core)
 
 target_sources(Audio_Beep_Synth_Single_Core PRIVATE beep_beep.c)
+target_sources(Audio_Beep_Synth_Single_Core PRIVATE beep_beep_2.c)
 
 # Add pico_multicore which is required for multicore functionality
-target_link_libraries(Audio_Beep_Synth_Single_Core pico_stdlib pico_bootsel_via_double_reset hardware_spi hardware_sync)
+# adding keyboard libraries too
+target_link_libraries(Audio_Beep_Synth_Single_Core pico_stdlib pico_bootsel_via_double_reset hardware_spi hardware_sync pico_multicore hardware_pio hardware_dma hardware_clocks)
 
 # create map/bin/hex file etc.
 pico_add_extra_outputs(Audio_Beep_Synth_Single_Core)
