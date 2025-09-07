@@ -130,69 +130,110 @@ uint16_t DAC_data_0 ; // output value
 //GPIO for timing the ISR
 #define ISR_GPIO 2
 
-// This timer ISR is called on core 0
-static void alarm_irq(void) {
+// static struct for spawning pt
+static struct pt spawn_struct ;
 
-    // Assert a GPIO when we enter the interrupt
+// // This timer ISR is called on core 0
+// static void alarm_irq(void) {
+
+//     // Assert a GPIO when we enter the interrupt
+//     gpio_put(ISR_GPIO, 1) ;
+
+//     // Clear the alarm irq
+//     hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
+
+//     // Reset the alarm register
+//     timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
+
+//     if (STATE_0 == 0) {
+//         // DDS phase and sine table lookup
+//         phase_accum_main_0 += phase_incr_main_0  ;
+//         DAC_output_0 = fix2int15(multfix15(current_amplitude_0,
+//             sin_table[phase_accum_main_0>>24])) + 2048 ;
+
+//         // Ramp up amplitude
+//         if (count_0 < ATTACK_TIME) {
+//             current_amplitude_0 = (current_amplitude_0 + attack_inc) ;
+//         }
+//         // Ramp down amplitude
+//         else if (count_0 > BEEP_DURATION - DECAY_TIME) {
+//             current_amplitude_0 = (current_amplitude_0 - decay_inc) ;
+//         }
+
+//         // Mask with DAC control bits, config_chan is the output channel of the
+//         // DAC
+//         DAC_data_0 = (DAC_config_chan_A | (DAC_output_0 & 0xffff))  ;
+
+//         // SPI write (no spinlock b/c of SPI buffer), sending the output to the DAC to beep
+//         spi_write16_blocking(SPI_PORT, &DAC_data_0, 1) ;
+
+//         // Increment the counter
+//         count_0 += 1 ;
+
+//         // State transition?
+//         if (count_0 == BEEP_DURATION) {
+//             STATE_0 = 1 ;
+//             count_0 = 0 ;
+//         }
+//     }
+
+//     // State transition?
+//     else {
+//         count_0 += 1 ;
+//         if (count_0 == BEEP_REPEAT_INTERVAL) {
+//             current_amplitude_0 = 0 ;
+//             STATE_0 = 0 ;
+//             count_0 = 0 ;
+//         }
+//     }
+
+//     // De-assert the GPIO when we leave the interrupt
+//     gpio_put(ISR_GPIO, 0) ;
+
+// }
+
+// beeping function
+static void beep_boi(void) {
+
+    // Assert a GPIO for interrupt
     gpio_put(ISR_GPIO, 1) ;
 
-    // Clear the alarm irq
-    hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
+    // // Clear the alarm irq
+    // hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
 
-    // Reset the alarm register
-    timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
+    // // Reset the alarm register
+    // timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
 
-    if (STATE_0 == 0) {
-        // DDS phase and sine table lookup
-        phase_accum_main_0 += phase_incr_main_0  ;
-        DAC_output_0 = fix2int15(multfix15(current_amplitude_0,
-            sin_table[phase_accum_main_0>>24])) + 2048 ;
+    // DDS phase and sine table lookup
+    phase_accum_main_0 += phase_incr_main_0  ;
+    DAC_output_0 = fix2int15(multfix15(current_amplitude_0,
+        sin_table[phase_accum_main_0>>24])) + 2048 ;
 
-        // Ramp up amplitude
-        if (count_0 < ATTACK_TIME) {
-            current_amplitude_0 = (current_amplitude_0 + attack_inc) ;
-        }
-        // Ramp down amplitude
-        else if (count_0 > BEEP_DURATION - DECAY_TIME) {
-            current_amplitude_0 = (current_amplitude_0 - decay_inc) ;
-        }
-
-        // Mask with DAC control bits, config_chan is the output channel of the
-        // DAC
-        DAC_data_0 = (DAC_config_chan_A | (DAC_output_0 & 0xffff))  ;
-
-        // SPI write (no spinlock b/c of SPI buffer)
-        spi_write16_blocking(SPI_PORT, &DAC_data_0, 1) ;
-
-        // Increment the counter
-        count_0 += 1 ;
-
-        // State transition?
-        if (count_0 == BEEP_DURATION) {
-            STATE_0 = 1 ;
-            count_0 = 0 ;
-        }
+    // Ramp up amplitude
+    if (count_0 < ATTACK_TIME) {
+        current_amplitude_0 = (current_amplitude_0 + attack_inc) ;
+    }
+    // Ramp down amplitude
+    else if (count_0 > BEEP_DURATION - DECAY_TIME) {
+        current_amplitude_0 = (current_amplitude_0 - decay_inc) ;
     }
 
-    // State transition?
-    else {
-        count_0 += 1 ;
-        if (count_0 == BEEP_REPEAT_INTERVAL) {
-            current_amplitude_0 = 0 ;
-            STATE_0 = 0 ;
-            count_0 = 0 ;
-        }
-    }
+    // Mask with DAC control bits, config_chan is the output channel of the
+    // DAC
+    DAC_data_0 = (DAC_config_chan_A | (DAC_output_0 & 0xffff))  ;
+
+    // SPI write (no spinlock b/c of SPI buffer), sending the output to the DAC to beep
+    spi_write16_blocking(SPI_PORT, &DAC_data_0, 1) ;
 
     // De-assert the GPIO when we leave the interrupt
     gpio_put(ISR_GPIO, 0) ;
-
+    
 }
 
 
 // blinking light thread
 // This thread runs on core 0
-static PT_THREAD (protothread_core_0(struct pt *pt))
+static PT_THREAD (protothread_led_blink(struct pt *pt))
 {
     // Indicate thread beginning
     PT_BEGIN(pt) ;
@@ -208,9 +249,41 @@ static PT_THREAD (protothread_core_0(struct pt *pt))
     PT_END(pt) ;
 }
 
+static PT_THREAD (protothread_dds(struct pt *pt))
+{
+    
+    // begin
+    PT_BEGIN(pt) ;
+
+     // set up increments for calculating bow envelope
+    attack_inc = divfix(max_amplitude, int2fix15(ATTACK_TIME)) ;
+    decay_inc =  divfix(max_amplitude, int2fix15(DECAY_TIME)) ;
+
+    // Build the sine lookup table
+    // scaled to produce values between 0 and 4096 (for 12-bit DAC)
+    int ii;
+    for (ii = 0; ii < sine_table_size; ii++){
+         sin_table[ii] = float2fix15(2047*sin((float)ii*6.283/(float)sine_table_size));
+    }
+
+    // Enable the interrupt for the alarm (we're using Alarm 0)
+    hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM) ;
+    // // Associate an interrupt handler with the ALARM_IRQ
+    // irq_set_exclusive_handler(ALARM_IRQ, alarm_irq) ;
+    // // Enable the alarm interrupt
+    // irq_set_enabled(ALARM_IRQ, true) ;
+    // Write the lower 32 bits of the target time to the alarm register, arming it.
+    // timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
+
+    beep_boi();
+
+    // end
+    PT_END(pt)
+}
+
 // Keyboard thread
 // This thread runs on core 0
-static PT_THREAD (protothread_core_0(struct pt *pt))
+static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
 {
     // Indicate thread beginning
     PT_BEGIN(pt) ;
@@ -218,7 +291,12 @@ static PT_THREAD (protothread_core_0(struct pt *pt))
     // Some variables
     static int i ;
     static uint32_t keypad ;
-
+    static int possible = 0 ;
+    static int not = 0 ;
+    static int mis = 1 ;
+    static int is = 2 ;
+    static int mnot = 3 ;
+    
     while(1) {
 
         gpio_put(LED, !gpio_get(LED)) ;
@@ -239,16 +317,39 @@ static PT_THREAD (protothread_core_0(struct pt *pt))
         if (keypad & button) {
             // Look for a valid keycode.
             for (i=0; i<NUMKEYS; i++) {
-                if (keypad == keycodes[i]) break ;
+                if (keypad == keycodes[i] && possible == i) {
+                    STATE_0 = is;
+                    break;
+                } 
+                else if (keypad == keycodes[i] && possible != i) {
+                    STATE_0 = mnot;
+                    break;
+                }
+                if (keypad == keycodes[i]) {
+                    STATE_0 = mis;
+                    possible = i;
+                    break;
+                }
             }
             // If we don't find one, report invalid keycode
-            if (i==NUMKEYS) (i = -1) ;
+            if (i==NUMKEYS) {
+                i = -1 ;
+                STATE_0 = not;
+            }
         }
         // Otherwise, indicate invalid/non-pressed buttons
-        else (i=-1) ;
+        else {
+            i=-1 ;
+            STATE_0 = not;
+        }
 
         // Print key to terminal
         printf("\n%d", i) ;
+
+        if (i != -1) {
+            // pt = pointer to parent struct; then pointer to child struct; pointer to child thread
+            PT_SPAWN(pt, &spawn_struct, protothread_dds(&spawn_struct)) ; 
+        }
 
         PT_YIELD_usec(30000) ;
     }
@@ -261,7 +362,7 @@ static PT_THREAD (protothread_core_0(struct pt *pt))
 int main() {
 
     // Overclock 
-    set_sys_clock_khz(150000, true) ;
+    //set_sys_clock_khz(150000, true) ;
 
     // Initialize stdio/uart (printf won't work unless you do this!)
     stdio_init_all();
@@ -305,28 +406,10 @@ int main() {
     gpio_pull_down((BASE_KEYPAD_PIN + 5)) ;
     gpio_pull_down((BASE_KEYPAD_PIN + 6)) ;
 
-    // set up increments for calculating bow envelope
-    attack_inc = divfix(max_amplitude, int2fix15(ATTACK_TIME)) ;
-    decay_inc =  divfix(max_amplitude, int2fix15(DECAY_TIME)) ;
-
-    // Build the sine lookup table
-    // scaled to produce values between 0 and 4096 (for 12-bit DAC)
-    int ii;
-    for (ii = 0; ii < sine_table_size; ii++){
-         sin_table[ii] = float2fix15(2047*sin((float)ii*6.283/(float)sine_table_size));
-    }
-
-    // Enable the interrupt for the alarm (we're using Alarm 0)
-    hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM) ;
-    // Associate an interrupt handler with the ALARM_IRQ
-    irq_set_exclusive_handler(ALARM_IRQ, alarm_irq) ;
-    // Enable the alarm interrupt
-    irq_set_enabled(ALARM_IRQ, true) ;
-    // Write the lower 32 bits of the target time to the alarm register, arming it.
-    timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY ;
-
     // Add core 0 threads
-    pt_add_thread(protothread_core_0) ;
+    pt_add_thread(protothread_led_blink) ;
+    pt_add_thread(protothread_debouncy_boi) ;
+    //pt_add_thread(protothread_dds) ;
 
     // Start scheduling core 0 threads
     pt_schedule_start ;
