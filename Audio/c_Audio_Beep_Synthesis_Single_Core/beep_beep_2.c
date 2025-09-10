@@ -82,13 +82,16 @@ typedef signed int fix15 ;
 
 //Direct Digital Synthesis (DDS) parameters
 #define two32 4294967296.0  // 2^32 (a constant)
-#define Fs 50000
-#define DELAY 20 // 1/Fs (in microseconds)
+#define Fs 40000
+#define DELAY 25 // 1/Fs (in microseconds)
+#define swoop_len 5200 // a 5200-length list (130ms @ 44kHz) that will hold swoop audio samples
+#define chirp_len 5720 // a 5720-length array (130ms @ 44kHz) that will hold chirp audio samples
 
 // the DDS units - core 0
 // Phase accumulator and phase increment. Increment sets output frequency.
 volatile unsigned int phase_accum_main_0;
-volatile unsigned int phase_incr_main_0 = (400.0*two32)/Fs ;
+//volatile unsigned int phase_incr_main_0 = (400.0*two32)/Fs ;
+volatile unsigned int phase_incr_main_0 ;
 
 // DDS sine table (populated in main())
 #define sine_table_size 256
@@ -116,6 +119,7 @@ fix15 current_amplitude_1 = 0 ;         // current amplitude (modified in ISR)
 volatile unsigned int STATE_0 = 0 ;
 volatile unsigned int count_0 = 0 ;
 volatile unsigned int make_beep = 0;
+volatile int possible = 0 ;
 
 // SPI data
 uint16_t DAC_data_1 ; // output value
@@ -139,6 +143,23 @@ uint16_t DAC_data_0 ; // output value
 //GPIO for timing the ISR
 #define ISR_GPIO 2
 
+// Function for swoop
+
+unsigned int swoop_generator() {
+    // purely generating the phase at current count for swoop
+    int freq = -260 * sin_table[(-0.000604 * count_0)] + 1740 ;
+    unsigned int phase_incr = (freq*two32)/Fs ;
+    return phase_incr;
+}
+
+// function for chirp
+unsigned int chirp_generator() {
+    // generating phase at current count for chirp
+    int freq = (0.000184)*(count_0*count_0) + 2000 ;
+    unsigned int phase_incr = (freq*two32)/Fs ;
+    return phase_incr ;
+}
+
 // This timer ISR is called on core 0
 static void alarm_irq(void) {
 
@@ -154,6 +175,13 @@ static void alarm_irq(void) {
     // now instead of using STATE_0 here to trigger a repeated beep
     // use the make_beep flag to trigger the beep
     if (make_beep == 1) {
+        // see if button 1 or 2 is pressed to determine swoop or chirp
+        if (possible == 1) {
+            phase_incr_main_0 = chirp_generator() ;
+        }
+        else if (possible == 2) {
+            phase_incr_main_0 = swoop_generator() ;
+        }
         // DDS phase and sine table lookup
         phase_accum_main_0 += phase_incr_main_0  ;
         DAC_output_0 = fix2int15(multfix15(current_amplitude_0,
@@ -231,7 +259,6 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
     // Some variables
     static int i ;
     static uint32_t keypad ;
-    static int possible = 0 ;
     // state definitions
     // static int not = 0 ;
     // static int mis = 1 ;
