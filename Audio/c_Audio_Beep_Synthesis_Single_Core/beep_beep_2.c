@@ -78,10 +78,8 @@ typedef signed int fix15 ;
 
 //Direct Digital Synthesis (DDS) parameters
 #define two32 4294967296.0  // 2^32 (a constant)
-#define Fs 40000
-#define DELAY 25 // 1/Fs (in microseconds)
-#define swoop_len 5200 // a 5200-length list (130ms @ 44kHz) that will hold swoop audio samples
-#define chirp_len 5720 // a 5720-length array (130ms @ 44kHz) that will hold chirp audio samples
+#define Fs 50000
+#define DELAY 20 // 1/Fs (in microseconds)
 
 // the DDS units - core 0
 // Phase accumulator and phase increment. Increment sets output frequency.
@@ -92,6 +90,10 @@ volatile unsigned int phase_incr_main_0 ;
 // DDS sine table (populated in main())
 #define sine_table_size 256
 fix15 sin_table[sine_table_size] ;
+
+// swoop table lookup (populated in main)
+#define swoop_table_size 6500
+fix15 swoop_table[swoop_table_size] ;
 
 // Values output to DAC
 int DAC_output_0 ;
@@ -108,7 +110,7 @@ fix15 current_amplitude_1 = 0 ;         // current amplitude (modified in ISR)
 #define ATTACK_TIME             250
 #define DECAY_TIME              250
 #define SUSTAIN_TIME            10000
-#define BEEP_DURATION           10500
+#define BEEP_DURATION           6500 // 50kint/sec(0.130sec) interrupts
 #define BEEP_REPEAT_INTERVAL    50000
 
 // State machine variables
@@ -152,7 +154,7 @@ unsigned int swoop_generator() {
 // function for chirp
 unsigned int chirp_generator() {
     // generating phase at current count for chirp
-    int freq = (0.000184)*(count_0*count_0) + 2000 ;
+    int freq = ((count_0*count_0)/8450) + 2000 ;
     unsigned int phase_incr = (freq*two32)/Fs ;
     return phase_incr ;
 }
@@ -208,6 +210,7 @@ static void alarm_irq(void) {
             count_0 = 0 ;
             // reset beep variable 
             make_beep = 0;
+            current_amplitude_0 = 0;
         }
 
     }
@@ -398,6 +401,12 @@ int main() {
     int ii;
     for (ii = 0; ii < sine_table_size; ii++){
          sin_table[ii] = float2fix15(2047*sin((float)ii*6.283/(float)sine_table_size));
+    }
+
+    // building swoop table lookup
+    int kk;
+    for (kk = 0; kk < swoop_table_size; kk++){
+         swoop_table[kk] = float2fix15(sin((float)kk*6.283/(float)sine_table_size));
     }
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
