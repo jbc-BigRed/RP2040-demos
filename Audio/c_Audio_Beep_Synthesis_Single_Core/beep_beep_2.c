@@ -145,10 +145,9 @@ uint16_t DAC_data_0 ; // output value
 
 unsigned int swoop_generator() {
     // purely generating the phase at current count for swoop
-    // int freq = -260 * sin_table[(-0.000604 * count_0)] + 1740 ;
-    // unsigned int phase_incr = (freq*two32)/Fs ;
-    // return phase_incr;
-    return 1 ;
+    int freq = swoop_table[count_0] ;
+    unsigned int phase_incr = (freq*two32)/Fs ;
+    return phase_incr;
 }
 
 // function for chirp
@@ -295,7 +294,7 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
         else (i=-1) ;
 
         // Print key to terminal
-        printf("\n%d", i) ;
+        // printf("\n%d", i) ;
 
         // Now implementing state machine logic to see when the beep will play (FSM)
         // STATE_0 is initialized as 0 when program starts
@@ -364,7 +363,6 @@ int main() {
     
     // Initialize stdio/uart (printf won't work unless you do this!)
     stdio_init_all();
-    printf("Hello, friends!\n");
 
     // Initialize SPI channel (channel, baud rate set to 20MHz)
     spi_init(SPI_PORT, 20000000) ;
@@ -405,8 +403,12 @@ int main() {
 
     // building swoop table lookup
     int kk;
-    for (kk = 0; kk < swoop_table_size; kk++){
-         swoop_table[kk] = float2fix15(sin((float)kk*6.283/(float)sine_table_size));
+    float g = - 0.000483 ; // pi/6500
+    float m;
+    for (kk = 0; kk < swoop_table_size; kk++) {
+        m = -260 * sin(g * kk) ;
+        swoop_table[kk] = m + 1740 ;
+        printf("%d\n", swoop_table[kk]) ;
     }
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
