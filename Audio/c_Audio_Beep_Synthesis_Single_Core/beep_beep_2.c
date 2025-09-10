@@ -13,7 +13,7 @@
     GND (pin 3)  -> GND on DAC 
 
     KEYPAD CONNECTIONS
-    - GPIO 9   -->  330 ohms  --> Pin 1 (button row 1)
+    - GPIO 9   -->  330 ohms  --> Pin 1 (button row gg
     - GPIO 10  -->  330 ohms  --> Pin 2 (button row 2)
     - GPIO 11  -->  330 ohms  --> Pin 3 (button row 3)
     - GPIO 12  -->  330 ohms  --> Pin 4 (button row 4)
@@ -95,6 +95,9 @@ fix15 sin_table[sine_table_size] ;
 #define swoop_table_size 6500
 fix15 swoop_table[swoop_table_size] ;
 
+#define chirp_table_size 6500
+fix15 chirp_table[chirp_table_size];
+
 // Values output to DAC
 int DAC_output_0 ;
 int DAC_output_1 ;
@@ -162,7 +165,7 @@ static void alarm_irq(void) {
         }
         else if (possible == 2) {
             // generating phase at current count for chirp
-            phase_incr_main_0 = ( ( ( ( count_0* count_0 ) / 8450 ) + 2000 ) * two32 ) / Fs ;
+            phase_incr_main_0 = chirp_table[ count_0 ] ;
         }
         // DDS phase and sine table lookup
         phase_accum_main_0 += phase_incr_main_0  ;
@@ -375,6 +378,12 @@ int main() {
     // building swoop table lookup (directly computes frequency then phase value)
     for (int kk = 0; kk < swoop_table_size; kk++) {
         swoop_table[kk] = ( (-260 * sin(- 0.000483 * kk) + 1740) * two32 ) / Fs ;
+    }
+
+    // building chirp table lookup (directly computes frequency then phase value)
+    for (int gg = 0; gg < chirp_table_size; gg++) {
+        chirp_table[gg] = ( ( ( ( gg * gg ) / 8450 ) + 2000 ) * two32 ) / Fs ;
+        printf("%d, %d\n", chirp_table[gg], gg) ;
     }
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
