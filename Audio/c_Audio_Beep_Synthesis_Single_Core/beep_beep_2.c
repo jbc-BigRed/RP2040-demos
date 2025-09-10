@@ -145,9 +145,8 @@ uint16_t DAC_data_0 ; // output value
 
 unsigned int swoop_generator() {
     // purely generating the phase at current count for swoop
-    int freq = swoop_table[count_0] ;
-    unsigned int phase_incr = (freq*two32)/Fs ;
-    return phase_incr;
+    int phase_incr = swoop_table[count_0] ;
+    return phase_incr ;
 }
 
 // function for chirp
