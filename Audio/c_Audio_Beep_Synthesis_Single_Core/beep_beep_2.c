@@ -333,7 +333,7 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
 int main() {
     
     // Overclock
-    //set_sys_clock_khz(150000, true) ;
+    set_sys_clock_khz(250000, true) ;
     
     // Initialize stdio/uart (printf won't work unless you do this!)
     stdio_init_all();
