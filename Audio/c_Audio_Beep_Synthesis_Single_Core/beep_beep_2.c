@@ -42,10 +42,6 @@
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
 
-// VGA graphics library
-#include "vga16_graphics_v2.h"
-#include "pt_cornell_rp2040_v1_4.h"
-
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
 
@@ -147,9 +143,10 @@ uint16_t DAC_data_0 ; // output value
 
 unsigned int swoop_generator() {
     // purely generating the phase at current count for swoop
-    int freq = -260 * sin_table[(-0.000604 * count_0)] + 1740 ;
-    unsigned int phase_incr = (freq*two32)/Fs ;
-    return phase_incr;
+    // int freq = -260 * sin_table[(-0.000604 * count_0)] + 1740 ;
+    // unsigned int phase_incr = (freq*two32)/Fs ;
+    // return phase_incr;
+    return 1 ;
 }
 
 // function for chirp
@@ -177,10 +174,10 @@ static void alarm_irq(void) {
     if (make_beep == 1) {
         // see if button 1 or 2 is pressed to determine swoop or chirp
         if (possible == 1) {
-            phase_incr_main_0 = chirp_generator() ;
+            phase_incr_main_0 = swoop_generator() ;
         }
         else if (possible == 2) {
-            phase_incr_main_0 = swoop_generator() ;
+            phase_incr_main_0 = chirp_generator() ;
         }
         // DDS phase and sine table lookup
         phase_accum_main_0 += phase_incr_main_0  ;

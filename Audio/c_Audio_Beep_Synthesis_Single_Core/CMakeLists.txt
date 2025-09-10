@@ -28,7 +28,7 @@ pico_sdk_init()
 
 add_executable(Audio_Beep_Synth_Single_Core)
 
-target_sources(Audio_Beep_Synth_Single_Core PRIVATE beep_beep.c)
+# target_sources(Audio_Beep_Synth_Single_Core PRIVATE beep_beep.c)
 target_sources(Audio_Beep_Synth_Single_Core PRIVATE beep_beep_2.c)
 
 # Add pico_multicore which is required for multicore functionality
