@@ -404,11 +404,13 @@ int main() {
     // building swoop table lookup
     int kk;
     float g = - 0.000483 ; // pi/6500
-    float m;
+    float frequency;
+    int increment ;
+    int phase = 0; 
     for (kk = 0; kk < swoop_table_size; kk++) {
-        m = -260 * sin(g * kk) ;
-        swoop_table[kk] = m + 1740 ;
-        printf("%d\n", swoop_table[kk]) ;
+        frequency = -260 * sin(g * kk) + 1740;
+        increment = ( frequency * two32 ) / Fs ;
+        swoop_table[kk] = increment ;
     }
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
