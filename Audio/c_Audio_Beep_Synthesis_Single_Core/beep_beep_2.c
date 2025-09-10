@@ -141,22 +141,6 @@ uint16_t DAC_data_0 ; // output value
 //GPIO for timing the ISR
 #define ISR_GPIO 2
 
-// Function for swoop
-
-unsigned int swoop_generator() {
-    // purely generating the phase at current count for swoop
-    int phase_incr = swoop_table[count_0] ;
-    return phase_incr ;
-}
-
-// function for chirp
-unsigned int chirp_generator() {
-    // generating phase at current count for chirp
-    int freq = ((count_0*count_0)/8450) + 2000 ;
-    unsigned int phase_incr = (freq*two32)/Fs ;
-    return phase_incr ;
-}
-
 // This timer ISR is called on core 0
 static void alarm_irq(void) {
 
@@ -174,10 +158,11 @@ static void alarm_irq(void) {
     if (make_beep == 1) {
         // see if button 1 or 2 is pressed to determine swoop or chirp
         if (possible == 1) {
-            phase_incr_main_0 = swoop_generator() ;
+            phase_incr_main_0 = swoop_table[ count_0 ] ;
         }
         else if (possible == 2) {
-            phase_incr_main_0 = chirp_generator() ;
+            // generating phase at current count for chirp
+            phase_incr_main_0 = ( ( ( ( count_0* count_0 ) / 8450 ) + 2000 ) * two32 ) / Fs ;
         }
         // DDS phase and sine table lookup
         phase_accum_main_0 += phase_incr_main_0  ;
@@ -195,10 +180,10 @@ static void alarm_irq(void) {
 
         // Mask with DAC control bits, config_chan is the output channel of the
         // DAC
-        DAC_data_0 = (DAC_config_chan_A | (DAC_output_0 & 0xffff))  ;
+        DAC_data_0 = ( DAC_config_chan_A | ( DAC_output_0 & 0xffff ))  ;
 
         // SPI write (no spinlock b/c of SPI buffer)
-        spi_write16_blocking(SPI_PORT, &DAC_data_0, 1) ;
+        spi_write16_blocking( SPI_PORT, &DAC_data_0, 1 ) ;
 
         // Increment the counter
         count_0 += 1 ;
@@ -212,16 +197,6 @@ static void alarm_irq(void) {
         }
 
     }
-
-    // // State transition?
-    // else {
-    //     count_0 += 1 ;
-    //     if (count_0 == BEEP_REPEAT_INTERVAL) {
-    //         current_amplitude_0 = 0 ;
-    //         STATE_0 = 0 ;
-    //         count_0 = 0 ;
-    //     }
-    // }
 
     // De-assert the GPIO when we leave the interrupt
     gpio_put(ISR_GPIO, 0) ;
@@ -291,9 +266,6 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
         }
         // Otherwise, indicate invalid/non-pressed buttons
         else (i=-1) ;
-
-        // Print key to terminal
-        // printf("\n%d", i) ;
 
         // Now implementing state machine logic to see when the beep will play (FSM)
         // STATE_0 is initialized as 0 when program starts
@@ -400,16 +372,9 @@ int main() {
          sin_table[ii] = float2fix15(2047*sin((float)ii*6.283/(float)sine_table_size));
     }
 
-    // building swoop table lookup
-    int kk;
-    float g = - 0.000483 ; // pi/6500
-    float frequency;
-    int increment ;
-    int phase = 0; 
-    for (kk = 0; kk < swoop_table_size; kk++) {
-        frequency = -260 * sin(g * kk) + 1740;
-        increment = ( frequency * two32 ) / Fs ;
-        swoop_table[kk] = increment ;
+    // building swoop table lookup (directly computes frequency then phase value)
+    for (int kk = 0; kk < swoop_table_size; kk++) {
+        swoop_table[kk] = ( (-260 * sin(- 0.000483 * kk) + 1740) * two32 ) / Fs ;
     }
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
