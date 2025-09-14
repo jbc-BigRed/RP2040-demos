@@ -1,5 +1,7 @@
 /**
  *  V. Hunter Adams (vha3@cornell.edu)
+    Jack Chaney (jbc282@cornell.edu)
+    Arielle Huang (ap474@cornell.edu)
 
     A timer interrupt on core 0 generates a 400Hz beep
     thru an SPI DAC, once per second. A single protothread
@@ -46,6 +48,11 @@
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
 
+// Include pre-calculated LUTs
+#include "sin_table.h"
+#include "swoop_table.h"
+#include "chirp_table.h"
+
 // Low-level alarm infrastructure we'll be using
 #define ALARM_NUM 0
 #define ALARM_IRQ TIMER_IRQ_0
@@ -87,17 +94,6 @@ typedef signed int fix15 ;
 volatile unsigned int phase_accum_main_0;
 //volatile unsigned int phase_incr_main_0 = (400.0*two32)/Fs ;
 volatile unsigned int phase_incr_main_0 ;
-
-// DDS sine table (populated in main())
-#define sine_table_size 256
-fix15 sin_table[sine_table_size] ;
-
-// swoop table lookup (populated in main)
-#define swoop_table_size 6500
-fix15 swoop_table[swoop_table_size] ;
-
-#define chirp_table_size 6500
-fix15 chirp_table[chirp_table_size];
 
 // Values output to DAC
 int DAC_output_0 ;
@@ -149,6 +145,8 @@ uint16_t DAC_data_0 ; // output value
 int dma_chan;
 volatile uint16_t dma_buffer;
 
+
+
 // This timer ISR is called on core 0
 static void alarm_irq(void) {
 
@@ -174,8 +172,12 @@ static void alarm_irq(void) {
         }
         // DDS phase and sine table lookup
         phase_accum_main_0 += phase_incr_main_0  ;
-        DAC_output_0 = fix2int15(multfix15(current_amplitude_0,
-            sin_table[phase_accum_main_0>>24])) + 2048 ;
+
+        // Quick fixed point multiplication to calculated amplitude for wave
+        fix15 modulated_sine = multfix15(current_amplitude_0,
+            sin_table[phase_accum_main_0 >> 24]) ;
+
+        DAC_output_0 = ((int32_t)modulated_sine * 2047 >> 15) + 2048 ;
 
         // Ramp up amplitude
         if (count_0 < ATTACK_TIME) {
@@ -408,24 +410,6 @@ int main() {
     // set up increments for calculating bow envelope
     attack_inc = divfix(max_amplitude, int2fix15(ATTACK_TIME)) ;
     decay_inc =  divfix(max_amplitude, int2fix15(DECAY_TIME)) ;
-
-    // Build the sine lookup table
-    // scaled to produce values between 0 and 4096 (for 12-bit DAC)
-    int ii;
-    for (ii = 0; ii < sine_table_size; ii++){
-         sin_table[ii] = float2fix15(2047*sin((float)ii*6.283/(float)sine_table_size));
-    }
-
-    // building swoop table lookup (directly computes frequency then phase value)
-    for (int kk = 0; kk < swoop_table_size; kk++) {
-        swoop_table[kk] = ( (-260 * sin(- 0.000483 * kk) + 1740) * two32 ) / Fs ;
-    }
-
-    // building chirp table lookup (directly computes frequency then phase value)
-    for (int gg = 0; gg < chirp_table_size; gg++) {
-        chirp_table[gg] = ( ( ( ( gg * gg ) / 8450 ) + 2000 ) * two32 ) / Fs ;
-        printf("%d, %d\n", chirp_table[gg], gg) ;
-    }
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
     hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM) ;
