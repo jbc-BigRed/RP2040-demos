@@ -114,7 +114,6 @@ fix15 current_amplitude_1 = 0 ;         // current amplitude (modified in ISR)
 #define BEEP_REPEAT_INTERVAL    50000
 
 // State machine variables
-volatile unsigned int STATE_0 = 0 ;
 volatile unsigned int count_0 = 0 ;
 volatile unsigned int make_beep = 0;
 volatile int possible = 0 ;
@@ -145,11 +144,27 @@ uint16_t DAC_data_0 ; // output value
 int dma_chan;
 volatile uint16_t dma_buffer;
 
+// Enum for keypad state tracking
+enum KEYPAD_STATE {
+    NOT_PRESSED,
+    MAYBE_PRESSED,
+    IS_PRESSED,
+};
+volatile enum KEYPAD_STATE keypad_state = NOT_PRESSED;
 
+// flag to help with anti-click logic
+volatile bool retrigger_beep = false;
 
 // This timer ISR is called on core 0
 static void alarm_irq(void) {
 
+    if (retrigger_beep) {
+        // retrigger logic to prevent clicking
+        // resets sound progress and amplitude for new attack
+        count_0 = 0 ;
+        current_amplitude_0 = 0 ;
+        retrigger_beep = false ;
+    }
     // Assert a GPIO when we enter the interrupt for timing analysis
     gpio_put(ISR_GPIO, 1) ;
 
@@ -246,8 +261,12 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
     PT_BEGIN(pt) ;
 
     // Some variables
+    // incrementer for looping
     static int i ;
+    // keypad variable to track button presses
     static uint32_t keypad ;
+    // maps to active key for retrigger purposes
+    static int active_key = -1 ;
 
     while(1) {
 
@@ -278,56 +297,44 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
         // Otherwise, indicate invalid/non-pressed buttons
         else (i=-1) ;
 
-        // Now implementing state machine logic to see when the beep will play (FSM)
-        // STATE_0 is initialized as 0 when program starts
-        // If STATE_0 == 0 (keypad = -1), then remain in that state
-        // Not pressed state
-        if (STATE_0 == 0) {
-            // if no press or invalid, stay in state 0
-            if (i == -1) {
-                STATE_0 = 0;
-            }
-            // press is valid, move to maybe pressed state
-            else {
-                STATE_0 = 1;
-                possible = i;
-            }
-        }
-        // Maybe pressed state
-        else if (STATE_0 == 1) {
-            // if the numbers match up, then move on to next state
-            // this is the state transitioning from maybe pressed to pressed
-            // so now the beep will be triggered here (flag)
-            if (possible == i) {
-                STATE_0 = 2;
-                make_beep = 1;
-            }
-            // else go back to not pressed
-            else {
-                STATE_0 = 0;
-            }
-        }
-        // pressed state
-        else if (STATE_0 == 2) {
-            // if key pressed still matches remain in state
-            if (possible == i) {
-                STATE_0 = 2;
-            }
-            // else move to maybe not pressed
-            else {
-                STATE_0 = 3;
-            }
-        }
-        // maybe not pressed state
-        else if (STATE_0 == 3) {
-            // if matches, go back to pressed
-            if (possible == i) {
-                STATE_0 = 2;
-            }
-            // else go to not pressed
-            else {
-                STATE_0 = 0;
-            }
+        // FSM handled by switch statement
+        switch (keypad_state) {
+            case NOT_PRESSED:
+                if (i != -1) {
+                    keypad_state = MAYBE_PRESSED ;
+                    possible = i ;
+                }
+                break;
+
+            case MAYBE_PRESSED:
+                if (i == possible) {
+                    keypad_state = IS_PRESSED ;
+                    // Check if a sound is already playing
+                    if (make_beep) {
+                        // If it's a new key, set the retrigger flag
+                        if (i != active_key) {
+                            retrigger_beep = true ;
+                            // Update the active key
+                            active_key = i ;
+                        }
+                    } else {
+                        // Otherwise, start a new beep normally
+                        make_beep = 1 ;
+                        // Set the active key
+                        active_key = i ;
+                    }
+                } else {
+                    keypad_state = NOT_PRESSED ;
+                }
+                break ;
+
+            case IS_PRESSED:
+                if (i == -1) {
+                    keypad_state = NOT_PRESSED ;
+                    // Clear the active key
+                    active_key = -1 ;
+                }
+                break ;
         }
 
         PT_YIELD_usec(30000) ;
