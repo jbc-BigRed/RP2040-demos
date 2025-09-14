@@ -1,7 +1,7 @@
 /**
  *  V. Hunter Adams (vha3@cornell.edu)
     Jack Chaney (jbc282@cornell.edu)
-    Arielle Huang (ap474@cornell.edu)
+    Arielle Huang (aph74@cornell.edu)
 
     A timer interrupt on core 0 generates a 400Hz beep
     thru an SPI DAC, once per second. A single protothread
@@ -150,7 +150,7 @@ static void alarm_irq(void) {
 
     // Assert a GPIO when we enter the interrupt for timing analysis
     gpio_put(ISR_GPIO, 1) ;
-    
+
     // Clear the alarm irq
     hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
 
@@ -219,7 +219,7 @@ static void alarm_irq(void) {
 
 
 // blinking light thread
-// This thread runs on core 0
+// This thread runs on core 1
 static PT_THREAD (protothread_led_blink(struct pt *pt))
 {
     // Indicate thread beginning
