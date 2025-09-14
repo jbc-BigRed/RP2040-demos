@@ -334,6 +334,15 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
     PT_END(pt) ;
 }
 
+void core1_entry() {
+
+    // Add keypad FSM thread to core1 scheduler
+    pt_add_thread(protothread_debouncy_boi) ;
+
+    // Start scheduler on core1
+    pt_schedule_start ;
+}
+
 // dds main
 // Core 0 entry point
 int main() {
@@ -439,9 +448,11 @@ int main() {
     gpio_pull_down((BASE_KEYPAD_PIN + 5)) ;
     gpio_pull_down((BASE_KEYPAD_PIN + 6)) ;
 
-    // Add core 0 threads
+    // launch core1 entry
+    multicore_launch_core1(core1_entry) ;
+
+    // Add core 0 thread
     pt_add_thread(protothread_led_blink) ;
-    pt_add_thread(protothread_debouncy_boi) ;
 
     // Start scheduling core 0 threads
     pt_schedule_start ;
