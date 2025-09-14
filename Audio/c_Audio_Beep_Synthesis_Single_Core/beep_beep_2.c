@@ -158,6 +158,9 @@ volatile bool retrigger_beep = false;
 // This timer ISR is called on core 0
 static void alarm_irq(void) {
 
+    // Assert a GPIO when we enter the interrupt for timing analysis
+    gpio_put(ISR_GPIO, 1) ;
+
     if (retrigger_beep) {
         // retrigger logic to prevent clicking
         // resets sound progress and amplitude for new attack
@@ -165,8 +168,6 @@ static void alarm_irq(void) {
         current_amplitude_0 = 0 ;
         retrigger_beep = false ;
     }
-    // Assert a GPIO when we enter the interrupt for timing analysis
-    gpio_put(ISR_GPIO, 1) ;
 
     // Clear the alarm irq
     hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
@@ -269,9 +270,6 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
     static int active_key = -1 ;
 
     while(1) {
-
-        gpio_put(LED, !gpio_get(LED)) ;
-
         // Below code until else (i=-1) ; is checking what the button pressed is, then after will implement state machine
         // Scan the keypad!
         for (i=0; i<KEYROWS; i++) {
