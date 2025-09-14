@@ -1,6 +1,6 @@
 /**
  *  V. Hunter Adams (vha3@cornell.edu)
- 
+
     A timer interrupt on core 0 generates a 400Hz beep
     thru an SPI DAC, once per second. A single protothread
     blinks the LED.
@@ -9,8 +9,8 @@
     GPIO 6 (pin 9) SCK/spi0_sclk
     GPIO 7 (pin 10) MOSI/spi0_tx
     GPIO 2 (pin 4) GPIO output for timing ISR
-    3.3v (pin 36) -> VCC on DAC 
-    GND (pin 3)  -> GND on DAC 
+    3.3v (pin 36) -> VCC on DAC
+    GND (pin 3)  -> GND on DAC
 
     KEYPAD CONNECTIONS
     - GPIO 9   -->  330 ohms  --> Pin 1 (button row gg
@@ -20,7 +20,7 @@
     - GPIO 13  -->     Pin 5 (button col 1)
     - GPIO 14  -->     Pin 6 (button col 2)
     - GPIO 15  -->     Pin 7 (button col 3)
- 
+
     SERIAL CONNECTIONS
     - GPIO 0        -->     UART RX (white)
     - GPIO 1        -->     UART TX (green)
@@ -29,6 +29,7 @@
  */
 
 // Include necessary libraries
+#include <stdint.h>
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -68,9 +69,9 @@ int prev_key = 0;
 // Macros for fixed-point arithmetic (faster than floating point)
 typedef signed int fix15 ;
 #define multfix15(a,b) ((fix15)((((signed long long)(a))*((signed long long)(b)))>>15))
-#define float2fix15(a) ((fix15)((a)*32768.0)) 
+#define float2fix15(a) ((fix15)((a)*32768.0))
 #define fix2float15(a) ((float)(a)/32768.0)
-#define absfix15(a) abs(a) 
+#define absfix15(a) abs(a)
 #define int2fix15(a) ((fix15)(a << 15))
 #define fix2int15(a) ((int)(a >> 15))
 #define char2fix15(a) (fix15)(((fix15)(a)) << 15)
@@ -141,13 +142,17 @@ uint16_t DAC_data_0 ; // output value
 #define LED      25
 #define SPI_PORT spi0
 
-//GPIO for timing the ISR
+// GPIO for timing the ISR
 #define ISR_GPIO 2
+
+// Define DMA channel and a buffer to hold the value to be transferred
+int dma_chan;
+volatile uint16_t dma_buffer;
 
 // This timer ISR is called on core 0
 static void alarm_irq(void) {
 
-    // Assert a GPIO when we enter the interrupt
+    // Assert a GPIO when we enter the interrupt for timing analysis
     gpio_put(ISR_GPIO, 1) ;
 
     // Clear the alarm irq
@@ -185,8 +190,14 @@ static void alarm_irq(void) {
         // DAC
         DAC_data_0 = ( DAC_config_chan_A | ( DAC_output_0 & 0xffff ))  ;
 
-        // SPI write (no spinlock b/c of SPI buffer)
-        spi_write16_blocking( SPI_PORT, &DAC_data_0, 1 ) ;
+        // DMA-based non-blocking write to DAC
+        dma_buffer = DAC_data_0 ;
+
+        // If the DMA isn't busy, then a new transfer is triggered, this makes sure sound output is continuous
+        if(!dma_channel_is_busy(dma_chan)) {
+            dma_channel_set_read_addr(dma_chan,
+                &dma_buffer, true) ;
+        }
 
         // Increment the counter
         count_0 += 1 ;
@@ -194,7 +205,7 @@ static void alarm_irq(void) {
         // State transition?
         if (count_0 == BEEP_DURATION) {
             count_0 = 0 ;
-            // reset beep variable 
+            // reset beep variable
             make_beep = 0;
             current_amplitude_0 = 0;
         }
@@ -214,7 +225,7 @@ static PT_THREAD (protothread_led_blink(struct pt *pt))
     // Indicate thread beginning
     PT_BEGIN(pt) ;
     while(1) {
-        
+
         // Toggle on LED
         gpio_put(LED, !gpio_get(LED)) ;
 
@@ -235,11 +246,6 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
     // Some variables
     static int i ;
     static uint32_t keypad ;
-    // state definitions
-    // static int not = 0 ;
-    // static int mis = 1 ;
-    // static int is = 2 ;
-    // static int mnot = 3 ;
 
     while(1) {
 
@@ -252,7 +258,7 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
             gpio_put_masked((0xF << BASE_KEYPAD_PIN),
                             (scancodes[i] << BASE_KEYPAD_PIN)) ;
             // Small delay required
-            sleep_us(1) ; 
+            sleep_us(1) ;
             // Read the keycode
             keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F) ;
             // Break if button(s) are pressed
@@ -331,10 +337,10 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
 // dds main
 // Core 0 entry point
 int main() {
-    
+
     // Overclock
     set_sys_clock_khz(250000, true) ;
-    
+
     // Initialize stdio/uart (printf won't work unless you do this!)
     stdio_init_all();
 
@@ -363,6 +369,32 @@ int main() {
     gpio_init(LED) ;
     gpio_set_dir(LED, GPIO_OUT) ;
     gpio_put(LED, 0) ;
+
+    // Configure DMA for sending to DAC
+    dma_chan = dma_claim_unused_channel(true) ;
+    dma_channel_config c = dma_channel_get_default_config(dma_chan) ;
+
+    // Transfer 16 bit values from buffer to SPI transmit register
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_16) ;
+
+    // No read increment since the buffer will be written to and read repeatedly
+    channel_config_set_read_increment(&c, false);
+
+    // No write increment since the destination (SPI TX) is fixed
+    channel_config_set_write_increment(&c, false);
+
+    // Set the DMA to trigger then the SPI TX FIFO has space
+    channel_config_set_dreq(&c, spi_get_dreq(SPI_PORT, true)) ;
+
+    // configure DMA channel to write to the spi data register from the buffer, one value at a time, and we will tell it when to start (trigger:false)
+    dma_channel_configure(
+        dma_chan,
+        &c,
+        &spi_get_hw(SPI_PORT)->dr,
+        &dma_buffer,
+        1,
+        false
+    ) ;
 
     // set up increments for calculating bow envelope
     attack_inc = divfix(max_amplitude, int2fix15(ATTACK_TIME)) ;
