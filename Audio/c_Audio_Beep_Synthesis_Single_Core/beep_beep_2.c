@@ -3,9 +3,7 @@
     Jack Chaney (jbc282@cornell.edu)
     Arielle Huang (aph74@cornell.edu)
 
-    A timer interrupt on core 0 generates a 400Hz beep
-    thru an SPI DAC, once per second. A single protothread
-    blinks the LED.
+    bird sounds come out the pico
 
     GPIO 5 (pin 7) Chip select
     GPIO 6 (pin 9) SCK/spi0_sclk
@@ -31,6 +29,7 @@
  */
 
 // Include necessary libraries
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
@@ -119,6 +118,13 @@ volatile unsigned int make_beep = 0 ;
 volatile int possible = 0 ;
 volatile unsigned int STATE_0 = 0 ;
 
+// Variables for recording
+volatile int bird_noises[16] = {    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1} ; // array for recording
+volatile int is_recording = 0 ;
+volatile int noise_idx = 0 ;
+volatile int is_done = 0 ; // 0 until a -1 is seen or the end of the array is hit
+volatile int done_recording = 0 ;
+
 // SPI data
 uint16_t DAC_data_1 ; // output value
 uint16_t DAC_data_0 ; // output value
@@ -168,12 +174,22 @@ static void alarm_irq(void) {
             // generating phase at current count for chirp
             phase_incr_main_0 = chirp_table[ count_0 ] ;
         }
+
         // DDS phase and sine table lookup
         phase_accum_main_0 += phase_incr_main_0  ;
 
+        // TODO: ADD CONDITIONAL LOGIC TO MAKE THE PAUSE FOR FINAL LAB
         // Quick fixed point multiplication to calculated amplitude for wave
         fix15 modulated_sine = multfix15(current_amplitude_0,
             sin_table[phase_accum_main_0 >> 24]) ;
+
+        // keypad # = 11 due to the masking for computing the valid keycode
+        // adds pause if not 1 and 2
+        if (possible != 1) {
+            if (possible !=2 ) {
+                modulated_sine = 0 ;
+            }
+        }
 
         DAC_output_0 = ((int32_t)modulated_sine * 2047 >> 15) + 2048 ;
 
@@ -202,11 +218,17 @@ static void alarm_irq(void) {
         // Increment the counter
         count_0 += 1 ;
 
-        // State transition?
+        // is beep done? if so reset the variables
         if (count_0 == BEEP_DURATION) {
             count_0 = 0 ;
-            // reset beep variable
             make_beep = 0;
+            // if the toggle from record to not record play the beep
+            if (is_recording == 0 && done_recording == 1) {
+                if ((noise_idx < 16) && (bird_noises[noise_idx] != -1)) {
+                    make_beep = 1 ;
+                    noise_idx += 1 ;
+                }
+            }
             current_amplitude_0 = 0;
         }
 
@@ -253,29 +275,47 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
 
     while(1) {
         // Below code until else (i=-1) ; is checking what the button pressed is, then after will implement state machine
-        // Scan the keypad!
-        for (i=0; i<KEYROWS; i++) {
-            // Set a row high
-            gpio_put_masked((0xF << BASE_KEYPAD_PIN),
-                            (scancodes[i] << BASE_KEYPAD_PIN)) ;
-            // Small delay required
-            sleep_us(1) ;
-            // Read the keycode
-            keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F) ;
-            // Break if button(s) are pressed
-            if (keypad & button) break ;
-        }
-        // If we found a button . . .
-        if (keypad & button) {
-            // Look for a valid keycode.
-            for (i=0; i<NUMKEYS; i++) {
-                if (keypad == keycodes[i]) break ;
+        if (done_recording == 0) {
+            // Scan the keypad!
+            for (i=0; i<KEYROWS; i++) {
+                // Set a row high
+                gpio_put_masked((0xF << BASE_KEYPAD_PIN),
+                                (scancodes[i] << BASE_KEYPAD_PIN)) ;
+                // Small delay required
+                sleep_us(1) ;
+                // Read the keycode
+                keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F) ;
+                // Break if button(s) are pressed
+                if (keypad & button) break ;
             }
-            // If we don't find one, report invalid keycode
-            if (i==NUMKEYS) (i = -1) ;
+            // If we found a button . . .
+            if (keypad & button) {
+                // Look for a valid keycode.
+                for (i=0; i<NUMKEYS; i++) {
+                    if (keypad == keycodes[i]) break ;
+                }
+                // If we don't find one, report invalid keycode
+                if (i==NUMKEYS) (i = -1) ;
+            }
+            // Otherwise, indicate invalid/non-pressed buttons
+            else (i=-1) ;
         }
-        // Otherwise, indicate invalid/non-pressed buttons
-        else (i=-1) ;
+        else {
+            // want to not set i = -1 if in the play state after recording
+            if (done_recording == 1 && is_recording == 0) {
+                i = bird_noises[noise_idx] ;
+                possible = i ; // matches possible to the current i
+                STATE_0 = 1;
+                if (i == -1 || i == 15) { // if reached the end of the recording or the max length of recording
+                    printf("exiting spoofed keypress loop") ;
+                    done_recording = 0;
+                    for (int k = 0; k < 16; k++) {
+                        bird_noises[k] = -1 ;
+                    }
+                    noise_idx = 0 ;
+                }
+            }
+        }
 
         // Now implementing state machine logic to see when the beep will play (FSM)
         // STATE_0 is initialized as 0 when program starts
@@ -300,6 +340,25 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
             if (possible == i) {
                 STATE_0 = 2;
                 make_beep = 1;
+                // toggle button for recording
+                if (i == 11) { // pressed #
+                    if (is_recording == 0) { // if previously in the not recording state, set to record
+                        is_recording = 1 ;
+                    }
+                    else {
+                        is_recording = 0 ; // if previously in the recording state, then set to play
+                        noise_idx = 0 ; // start the noise playing from the beginning
+                        done_recording = 1 ; // arbitrary play noise flag
+                    }
+                }
+                // if recording is valid, then see what button was pressed and then add to the recording (up to 16 presses per recording)
+                if (is_recording) {
+                    if ((i == 1 || i == 2 || i == 3) && (noise_idx < 16)) {
+                        bird_noises[noise_idx] = i ;
+                        printf("pos: %d\nval: %d\n", noise_idx, i) ;
+                        noise_idx++ ;
+                    }
+                }
             }
             // else go back to not pressed
             else {
