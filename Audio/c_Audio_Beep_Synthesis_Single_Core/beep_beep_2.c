@@ -85,7 +85,7 @@ typedef signed int fix15 ;
 
 //Direct Digital Synthesis (DDS) parameters
 #define two32 4294967296.0  // 2^32 (a constant)
-#define Fs 50000
+#define Fs 50000 // Sampling frequency
 #define DELAY 20 // 1/Fs (in microseconds)
 
 // the DDS units - core 0
@@ -120,10 +120,10 @@ volatile unsigned int STATE_0 = 0 ;
 
 // Variables for recording
 volatile int bird_noises[16] = {    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1} ; // array for recording
-volatile int is_recording = 0 ;
-volatile int noise_idx = 0 ;
+volatile int is_recording = 0 ; // Flag indicating whether record mode is active
+volatile int noise_idx = 0 ; // The current position in stored bird noises array
 volatile int is_done = 0 ; // 0 until a -1 is seen or the end of the array is hit
-volatile int done_recording = 0 ;
+volatile int done_recording = 0 ; // Flag indicating transition between record and play mode (sets off recording playback)
 
 // SPI data
 uint16_t DAC_data_1 ; // output value
@@ -189,11 +189,11 @@ static void alarm_irq(void) {
         // adds pause if not 1 and 2 (silent beep)
         if (possible != 1) {
             if (possible !=2 ) {
-                modulated_sine = 0 ;
+                modulated_sine = 0 ; // do not make noise if any key other than 1 or 2 is pressed
             }
         }
 
-        DAC_output_0 = ((int32_t)modulated_sine * 2047 >> 15) + 2048 ;
+        DAC_output_0 = ((int32_t)modulated_sine * 2047 >> 15) + 2048 ; // get values from table and shift into positive range
         // Ramp up amplitude
         if (count_0 < ATTACK_TIME) {
             current_amplitude_0 = (current_amplitude_0 + attack_inc) ;
@@ -219,16 +219,17 @@ static void alarm_irq(void) {
         // Increment the counter
         count_0 += 1 ;
 
-        // is beep done? if so reset the variables
+        // is beep done? if so reset the variables of interest
         if (count_0 == BEEP_DURATION) {
             count_0 = 0 ;
             make_beep = 0;
-            // if the toggle from record to not record play the beep
+            // if toggling from record to not record, set the array to select the next sound
             if (is_recording == 0 && done_recording == 1) {
                 if ((noise_idx < 16) && (bird_noises[noise_idx] != -1)) {
                     noise_idx += 1 ;
                 }
             }
+            // ensure sound starts from zero level
             current_amplitude_0 = 0;
         }
     }
@@ -237,7 +238,6 @@ static void alarm_irq(void) {
     gpio_put(ISR_GPIO, 0) ;
 
 }
-
 
 // blinking light thread
 // This thread runs on core 1
@@ -307,6 +307,7 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
                 STATE_0 = 1;
                 if (i == -1 || i >= 15) { // if reached the end of the recording or the max length of recording
                     done_recording = 0;
+                    // reset array and indexer for next record cycle
                     for (int k = 0; k < 16; k++) {
                         bird_noises[k] = -1 ;
                     }
