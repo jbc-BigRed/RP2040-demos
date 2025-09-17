@@ -165,7 +165,9 @@ static void alarm_irq(void) {
 
     // now instead of using STATE_0 here to trigger a repeated beep
     // use the make_beep flag to trigger the beep
-    if (make_beep == 1) {
+    // checks for possible = 11 since that is a "sound" key,
+    // ensures that count_0 is properly incremented and each sound is the proper length
+    if (make_beep == 1 && possible != 11) {
         // see if button 1 or 2 is pressed to determine swoop or chirp
         if (possible == 1) {
             phase_incr_main_0 = swoop_table[ count_0 ] ;
@@ -184,7 +186,7 @@ static void alarm_irq(void) {
             sin_table[phase_accum_main_0 >> 24]) ;
 
         // keypad # = 11 due to the masking for computing the valid keycode
-        // adds pause if not 1 and 2
+        // adds pause if not 1 and 2 (silent beep)
         if (possible != 1) {
             if (possible !=2 ) {
                 modulated_sine = 0 ;
@@ -192,7 +194,6 @@ static void alarm_irq(void) {
         }
 
         DAC_output_0 = ((int32_t)modulated_sine * 2047 >> 15) + 2048 ;
-
         // Ramp up amplitude
         if (count_0 < ATTACK_TIME) {
             current_amplitude_0 = (current_amplitude_0 + attack_inc) ;
@@ -225,13 +226,11 @@ static void alarm_irq(void) {
             // if the toggle from record to not record play the beep
             if (is_recording == 0 && done_recording == 1) {
                 if ((noise_idx < 16) && (bird_noises[noise_idx] != -1)) {
-                    make_beep = 1 ;
                     noise_idx += 1 ;
                 }
             }
             current_amplitude_0 = 0;
         }
-
     }
 
     // De-assert the GPIO when we leave the interrupt
@@ -306,8 +305,7 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
                 i = bird_noises[noise_idx] ;
                 possible = i ; // matches possible to the current i
                 STATE_0 = 1;
-                if (i == -1 || i == 15) { // if reached the end of the recording or the max length of recording
-                    printf("exiting spoofed keypress loop") ;
+                if (i == -1 || i >= 15) { // if reached the end of the recording or the max length of recording
                     done_recording = 0;
                     for (int k = 0; k < 16; k++) {
                         bird_noises[k] = -1 ;
@@ -339,13 +337,13 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
             // so now the beep will be triggered here (flag)
             if (possible == i) {
                 STATE_0 = 2;
-                make_beep = 1;
                 // toggle button for recording
                 if (i == 11) { // pressed #
                     if (is_recording == 0) { // if previously in the not recording state, set to record
                         is_recording = 1 ;
                     }
                     else {
+                        //current_amplitude_0 = 0 ;
                         is_recording = 0 ; // if previously in the recording state, then set to play
                         noise_idx = 0 ; // start the noise playing from the beginning
                         done_recording = 1 ; // arbitrary play noise flag
@@ -355,10 +353,10 @@ static PT_THREAD (protothread_debouncy_boi(struct pt *pt))
                 if (is_recording) {
                     if ((i == 1 || i == 2 || i == 3) && (noise_idx < 16)) {
                         bird_noises[noise_idx] = i ;
-                        printf("pos: %d\nval: %d\n", noise_idx, i) ;
                         noise_idx++ ;
                     }
                 }
+                make_beep = 1;
             }
             // else go back to not pressed
             else {
