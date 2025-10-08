@@ -37,11 +37,11 @@
 // VGA timing constants
 #define H_ACTIVE   655    // (active + frontporch - 1) - one cycle delay for mov
 #define V_ACTIVE   479    // (active - 1)
-#define RGB_ACTIVE 319    // (horizontal active)/2 - 1
-// #define RGB_ACTIVE 639 // change to this if 1 pixel/byte
+#define RGB_ACTIVE 79    // (horizontal active)/2 - 1
+//#define RGB_ACTIVE 639 // change to this if 1 pixel/byte
 
 // Length of the pixel array, and number of DMA transfers
-#define TXCOUNT 153600 // Total pixels/2 (since we have 2 pixels per byte)
+#define TXCOUNT 38400 // Total pixels/2 = 153600 (since we have 2 pixels per byte) // now will be pixels/8 since we are dividing by 4
 
 // Pixel color array that is DMA's to the PIO machines and
 // a pointer to the ADDRESS of this color array.
@@ -50,8 +50,8 @@ unsigned char vga_data_array[TXCOUNT];
 char * address_pointer = &vga_data_array[0] ;
 
 // Bit masks for drawPixel routine
-#define TOPMASK 0b00001111
-#define BOTTOMMASK 0b11110000
+//#define TOPMASK 0b00001111
+//#define BOTTOMMASK 0b11110000
 
 // For drawLine
 #define swap(a, b) { short t = a; a = b; b = t; }
@@ -190,19 +190,20 @@ void drawPixel(short x, short y, char color) {
     // if (x < 0) x = 0 ;
     // if (y < 0) y = 0 ;
     // if (y > 479) y = 479 ;
-    if((x > 639) | (x < 0) | (y > 479) | (y < 0) ) return;
+    if((x > 639) | (x < 0) | (y > 479) | (y < 0) ) return; //computing index of the array
 
     // Which pixel is it?
-    int pixel = ((640 * y) + x) ;
+    int pixel = ((640 * y) + x) ; // >> 3 is the index
+
 
     // Is this pixel stored in the first 4 bits
     // of the vga data array index, or the second
     // 4 bits? Check, then mask.
     if (pixel & 1) {
-        vga_data_array[pixel>>1] = (vga_data_array[pixel>>1] & TOPMASK) | (color << 4) ;
+        vga_data_array[pixel>>3] = (vga_data_array[pixel>>3] & 7) | (1) ;  // want to know what bit of the index (pixel 8 = 0) // &7 = %8
     }
     else {
-        vga_data_array[pixel>>1] = (vga_data_array[pixel>>1] & BOTTOMMASK) | (color) ;
+        vga_data_array[pixel>>3] = (vga_data_array[pixel>>3] & 7) | (0) ; // by | (0) or (1) will 
     }
 }
 
@@ -224,10 +225,10 @@ void drawRedPixel(short x, short y) {
     // of the vga data array index, or the second
     // 4 bits? Check, then mask.
     if (pixel & 1) {
-        vga_data_array[pixel>>1] = (vga_data_array[pixel>>1] & TOPMASK) | (RED << 4) ;
+        vga_data_array[pixel>>3] = (vga_data_array[pixel>>3] & 7) | 1 ; // >>3 is a /8
     }
     else {
-        vga_data_array[pixel>>1] = (vga_data_array[pixel>>1] & BOTTOMMASK) | (RED) ;
+        vga_data_array[pixel>>3] = (vga_data_array[pixel>>3] & 7) | 0 ;
     }
 }
 
@@ -249,10 +250,10 @@ void drawBlackPixel(short x, short y) {
     // of the vga data array index, or the second
     // 4 bits? Check, then mask.
     if (pixel & 1) {
-        vga_data_array[pixel>>1] = (vga_data_array[pixel>>1] & TOPMASK) | (BLACK << 4) ;
+        vga_data_array[pixel>>3] = (vga_data_array[pixel>>3] & 7) | 1 ;
     }
     else {
-        vga_data_array[pixel>>1] = (vga_data_array[pixel>>1] & BOTTOMMASK) | (BLACK) ;
+        vga_data_array[pixel>>3] = (vga_data_array[pixel>>3] & 7) | 0 ;
     }
 }
 
@@ -268,7 +269,7 @@ void drawHLine(int x, int y, int w, char color) {
   if((x + w - 1) >= _width)  w = _width  - x - 1;
   //
   //short xx = x;
-  short both_color = color | (color<<4) ;
+  short both_color = 0 | (color<<4) ;
   // loner pixel at x -- align left with next byte boundary
   if((x & 1)) {
     drawPixel(x,y,color);
@@ -280,9 +281,10 @@ void drawHLine(int x, int y, int w, char color) {
     drawPixel(x+w-1, y, color);
     w-- ;
   }
+  
   // draw rest of line
-  int len = (w>>1)  ;
-  if (len>0 && y<480 ) memset(&vga_data_array[320*y+(x>>1)], both_color, len) ;
+  int len = (w>>3)  ;
+  if (len>0 && y<480 ) memset(&vga_data_array[640*y+(x>>3)], both_color, len) ;
  // original code
     // for (int i=x; i<=(x+w); i++) {
     //     drawPixel(i, y, color) ;
@@ -658,12 +660,12 @@ inline void writeStringBold(char* str){
 // the vga display boundaries (0,0) to (640,480)
 void clearRect(short x1, short y1, short x2, short y2, short c) {
   for(int i=y1; i<y2; i++){
-    memset(&vga_data_array[320*i+(x1>>1)], c | (c<<4), (x2-x1)>>1) ;
+    memset(&vga_data_array[640*i+(x1>>1)], c | (c<<4), (x2-x1)>>1) ;
   };
 }
 
 void clearLowFrame(short top, short c) {
-    memset(&vga_data_array[320*top], c | (c<<4), (TXCOUNT-320*top) );
+    memset(&vga_data_array[640*top], c | (c<<4), (TXCOUNT-640*top) );
 }
 
 //////////////////////////////////////////////////
@@ -683,18 +685,3 @@ short readPixel(short x, short y) {
   }
   return color ;
 }
-
-///////////////////////////////////////////////
-void crosshair(short x, short y, short c){
-  drawPixel(x,y,c);
-  drawPixel(x-1,y,c);
-  drawPixel(x+1,y,c);
-  drawPixel(x,y-1,c);
-  drawPixel(x,y+1,c);
-  drawPixel(x-2,y,c);
-  drawPixel(x+2,y,c);
-  drawPixel(x,y-2,c);
-  drawPixel(x,y+2,c);
-}
-
-///////////////////////////////////////////////
