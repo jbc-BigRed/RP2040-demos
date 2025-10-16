@@ -437,10 +437,10 @@ static inline void check_collisions_opt(short ball_idx)
   }
 }
 
-// timer function to start the timer at boot
-static inline void initTimer() {
-  global_start_time_us = time_us_32();
-}
+// // timer function to start the timer at boot
+// static inline void initTimer() {
+//   global_start_time_us = time_us_32();
+// }
 
 // Animation on core 0, animating the ball bouncing on peg
 static PT_THREAD (protothread_anim(struct pt *pt))
