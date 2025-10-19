@@ -1,10 +1,13 @@
 /**
- * Hunter Adams (vha3@cornell.edu)
+ * Hunter Adams  (vha3@cornell.edu)
+ * Jack Chaney   (jbc282@cornell.edu)
+ * Arielle Huang (aph74@cornell.edu)
  *
  * This demonstration animates two balls bouncing about the screen.
  * Through a serial interface, the user can change the ball color.
  *
  * HARDWARE CONNECTIONS
+  - GPIO 15 ---> Button for user input
   - GPIO 16 ---> VGA Hsync
   - GPIO 17 ---> VGA Vsync
   - GPIO 18 ---> VGA Green lo-bit --> 470 ohm resistor --> VGA_Green
