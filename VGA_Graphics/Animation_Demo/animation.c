@@ -120,7 +120,6 @@ char color = RED ;
 #define MAX_BALLS 2510 
 volatile unsigned int active_balls = 1 ;
 volatile unsigned int prev_active_balls ; // keeping track of number of balls 
-//volatile unsigned int prev_active_balls2 ; // keeping track of number of balls 
 volatile unsigned int fallen_balls = 0 ;
 char active_balls_buffer[16] ; // buffer for snprintf 
 char fallen_balls_buffer[20] ;
@@ -169,7 +168,7 @@ volatile int btn_pressed = 0 ;
 char state_buffer[17] ; // buffer for snprintf for the current state
 volatile int pot_funct = INIT ; // function of potentiometer, initialized at INIT, can be ADJUST_BALLS, ADJUST_BOUNCE
 
-
+// Ball struct, stores all important ball info
 struct ball {
   fix15 x ;
   fix15 y ;
@@ -178,16 +177,16 @@ struct ball {
   short last_peg ;
 } ;
 
+// peg struct for peg coords
 struct peg {
   fix15 x ;
   fix15 y ;
 } ;
 
+// Make the peg array, and make two arrays for balls, one for each core
 struct peg pegs[136] ;
 struct ball balls[MAX_BALLS] ;
-// __attribute__((section(".scratch_x"), aligned(4))); // scratch x -> core 0
 struct ball balls2[MAX_BALLS] ;
-// __attribute__((section(".scratch_y"), aligned(4))); // scratch y -> core 1
 
 // make the thunk noise
 static inline void audio_init() {
@@ -250,7 +249,7 @@ static inline void play_hit_sound() {
   dma_channel_start(ctrl_chan) ;
 }
 
-// intialize the balls into the array of balls and say no pegs hit
+// intialize the balls (core0) into the array of balls and say no pegs hit
 static inline void init_balls() {
   for (int i = 0; i < MAX_BALLS; i++)  {
     balls[i].x = int2fix15(BALL_SPAWN_X) ;
@@ -263,7 +262,7 @@ static inline void init_balls() {
   }
 }
 
-// intialize the balls into the array of balls and say no pegs hit
+// intialize the balls (core1) into the array of balls and say no pegs hit
 static inline void init_balls2() {
   for (int i = 0; i < MAX_BALLS; i++)  {
     balls2[i].x = int2fix15(BALL_SPAWN_X) ;
@@ -276,7 +275,7 @@ static inline void init_balls2() {
   }
 }
 
-// create a ball (inline makes it run faster)
+// create a ball
 static inline void spawnBall(short ball_idx) {
   // Start ball in center of screen on spawn point
   balls[ball_idx].x = int2fix15(BALL_SPAWN_X) ;
@@ -334,9 +333,6 @@ static inline void generateBoard() {
   for (int i = 0; i < rows; i++) {
     yi = peg0_y + multfix15(int2fix15(i), dy) ; // move the row down based on the first row
 
-    // add the peg to the pegs array
-   // pegs[i].y = yi ;
-
     for (int j = 0; j <= i; j++) {
       if ( peg_idx < 136 ) {
         // even row x spacing
@@ -380,6 +376,7 @@ static inline void wallsAndEdges(short ball_idx) {
     spawnBall(ball_idx) ; 
     fallen_balls += 1 ;
   }
+  // Mirror ball movement if hit edge of arena
   if (hitRight(balls[ball_idx].x)) {
     balls[ball_idx].vx = multfix15(float2fix15(bounciness), (-balls[ball_idx].vx)) ;
     balls[ball_idx].x  = (balls[ball_idx].x - int2fix15(5)) ;
@@ -443,6 +440,7 @@ static inline void hitPeg(short ball_idx, short peg_idx)
   }  
 }
 
+// Check collisions by finding where the ball is in board and then only checking two rows localized around position
 static inline void check_collisions_opt(short ball_idx) 
 {
   // Ball's y position determines its approximate row
@@ -467,7 +465,7 @@ static inline void check_collisions_opt(short ball_idx)
   }
 }
 
-
+// Because our initial implementation did not take an array as an argument, and we implemented multicore in lab, it was much easier to just make copy methods for the core1 balls as a quick and dirty way to almost double our balls number!
 static inline void wallsAndEdges2(short ball_idx) {
   // Reverse direction if we've hit a wall
   if (hitTop(balls2[ball_idx].y)) {
@@ -575,11 +573,6 @@ static inline void check_collisions_opt2(short ball_idx)
   }
 }
 
-// timer function to start the timer at boot
-static inline void initTimer() {
-  global_start_time_us = time_us_32();
-}
-
 // Animation on core 0, animating the ball bouncing on peg
 static PT_THREAD (protothread_anim(struct pt *pt))
 {
@@ -609,7 +602,6 @@ static PT_THREAD (protothread_anim(struct pt *pt))
       begin_time = time_us_32() ;
 
       generateBoard() ;
-      //drawArena() ;
       // draw box over old text to erase
       fillRect(30, 40, 170, 50, BLACK);
       // Generate the text for the screen
@@ -691,9 +683,6 @@ static PT_THREAD (protothread_anim2(struct pt *pt))
       // Measure time at start of thread
       begin_time = time_us_32() ;
 
-      //generateBoard() ;
-      //drawArena() ;
-
       // update ball's position and velocity
       // need to do for every ball, then for every peg... nested for loops???
       for (int ball = 0; ball < MAX_BALLS; ball++) {
@@ -718,13 +707,6 @@ static PT_THREAD (protothread_anim2(struct pt *pt))
       // delay in accordance with frame rate
       spare_time = FRAME_RATE - (time_us_32() - begin_time) ;
 
-      // // Check if framerate is met
-      // if (spare_time < 0) {
-      //   gpio_put(LED, 1) ; 
-      // }
-      // else {
-      //   gpio_put(LED, 0) ;
-      // }
       // // yield for necessary amount of time
       PT_YIELD_usec(spare_time) ;
      // NEVER exit while
@@ -732,6 +714,7 @@ static PT_THREAD (protothread_anim2(struct pt *pt))
   PT_END(pt);
 } // animation thread 2
 
+// thread to draw ball histogram at bottom of screen
 static PT_THREAD (protothread_histo(struct pt *pt)) 
 {
   // Mark beginning of thread
@@ -744,9 +727,6 @@ static PT_THREAD (protothread_histo(struct pt *pt))
     while(1) {
       // Measure time at start of thread
       begin_time = time_us_32() ;
-
-      // erase old histo
-      //fillRect(10, 410, 620, 60, BLACK) ;
 
       // normalize the histogram (keep track of the bin with the max height)
       int bin_max_h = -1 ;
@@ -795,15 +775,12 @@ static PT_THREAD(protothread_pot(struct pt *pt))
     // Measure time at start of thread
     begin_time = time_us_32() ;
 
-    // fix15 adc_result = int2fix15(adc_read()) ;
-
     // average the ADC reads to make sure that the noise is averaged out
     uint32_t adc_sum = 0 ;
     for (int i = 0; i < 16; i++) {
       adc_sum += adc_read() ;
     }
     uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
-    //active_balls = ((adc_result * (MAX_BALLS - 1)) / 4096) + 1 ;
 
     // now do the potentiometer function based on what the other thread said
     switch (pot_funct) {
@@ -813,7 +790,7 @@ static PT_THREAD(protothread_pot(struct pt *pt))
       break ;
       case ADJUST_BALLS :
         imm_prod = multfix15(int2fix15(adc_filtered), (MAX_BALLS)); // Don't need to convert MAX_BALLS
-        active_balls = fix2int15(divfix(imm_prod, 4096)); // do we need to int2fix15(4096) for the proper fix division?
+        active_balls = fix2int15(divfix(imm_prod, 4096));
       break ;
       case ADJUST_BOUNCE :
         imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_BOUNCE));
@@ -846,6 +823,7 @@ static PT_THREAD(protothread_pot(struct pt *pt))
   PT_END(pt) ;
 } // thread for the potentiometer
 
+// Input button debouncing for state management
 static PT_THREAD(protothread_debouncing(struct pt *pt)) 
 {
   PT_BEGIN(pt);
@@ -854,8 +832,6 @@ static PT_THREAD(protothread_debouncing(struct pt *pt))
   static int spare_time ;
   static uint32_t begin_time ;
   
-  // gpio_pin.value()
-
   while(1) {
     begin_time = time_us_32() ;
 
@@ -903,6 +879,7 @@ static PT_THREAD(protothread_debouncing(struct pt *pt))
   PT_END(pt) ;
 } // thread for the debouncing
 
+// thread to manage state using debounced input
 static PT_THREAD(protothread_potFSM(struct pt *pt))
 {
   PT_BEGIN(pt) ;
@@ -917,7 +894,7 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
 
   while(1) {
     // since this thread just cycles based on button presses, 
-    // can just wait until the flag is incremented(?), 
+    // can just wait until the flag is incremented, 
     // and then restart STATE_1 in a loop without switch statements
 
     PT_WAIT_UNTIL(pt, btn_pressed > 0) ; // not using semaphores (maybe can?)
@@ -953,38 +930,10 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
 } // thread for potentiometer FSM
 
 
-// static PT_THREAD(protothread_text(struct pt *pt)) 
-// {
-//   PT_BEGIN(pt) ;
-  
-//   // Variables for maintaining frame rate
-//   static int spare_time ;
-//   static uint32_t begin_time ;
-
-//   // initialize the VGA text
-//   setTextColor(RED) ;
-//   setTextSize(1) ;
-
-//   while(1) {
-    
-
-//     // delay in accordance with frame rate
-//     spare_time = FRAME_RATE - (time_us_32() - begin_time) ;
-
-//     // yield for necessary amount of time and also more time for every other frame
-//     PT_YIELD_usec(spare_time) ;
-//   }
-
-//   PT_END(pt) ;
-// } // thread for drawing vga text
-
-
-
 // ========================================
 // === Core 1 entry
 // ========================================
 // put user input thread on core1
-
 void core1_entry() 
 {
 
