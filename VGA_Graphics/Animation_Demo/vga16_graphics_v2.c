@@ -211,11 +211,6 @@ void drawPixel(short x, short y, char color) {
 // a DMA channel, we only need to modify the contents of the array and the
 // pixels will be automatically updated on the screen.
 void drawRedPixel(short x, short y) {
-    // Range checks (640x480 display)
-    // if (x > 639) x = 639 ;
-    // if (x < 0) x = 0 ;
-    // if (y < 0) y = 0 ;
-    // if (y > 479) y = 479 ;
 
     // Which pixel is it?
     int pixel = ((640 * y) + x) ;
@@ -236,11 +231,6 @@ void drawRedPixel(short x, short y) {
 // a DMA channel, we only need to modify the contents of the array and the
 // pixels will be automatically updated on the screen.
 void drawBlackPixel(short x, short y) {
-    // Range checks (640x480 display)
-    // if (x > 639) x = 639 ;
-    // if (x < 0) x = 0 ;
-    // if (y < 0) y = 0 ;
-    // if (y > 479) y = 479 ;
 
     // Which pixel is it?
     int pixel = ((640 * y) + x) ;
@@ -361,6 +351,7 @@ void drawRect(short x, short y, short w, short h, char color) {
   drawVLine(x+w-1, y, h, color);
 }
 
+// boutique pixel stamp for drawing ball
 void drawBall(short x0, short y0) {
 /* Draw a circle outline with center (x0,y0) and radius 1, with given color
  * Parameters:
@@ -379,6 +370,7 @@ void drawBall(short x0, short y0) {
   drawRedPixel(x0-BALL_R, y0  );
 }
 
+// boutique pixel stamp for masking black pixels over the ball
 void maskBall(short x0, short y0) {
 /* Draw a circle outline with center (x0,y0) and radius 1, with given color
  * Parameters:
@@ -397,6 +389,7 @@ void maskBall(short x0, short y0) {
   drawBlackPixel(x0-BALL_R, y0  );
 }
 
+// boutique pixel stamp for drawing peg
 void drawPeg(short x0, short y0) {
 /* Draw a circle outline with center (x0,y0) and radius 6, with given color
  * Parameters:
