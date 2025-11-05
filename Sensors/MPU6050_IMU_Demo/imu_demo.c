@@ -106,6 +106,7 @@ char target_angle_buffer[10] ;
 char prop_buffer[10] ;
 char int_buffer[10] ;
 char div_buffer[10] ;
+char timestep_buffer[10] ;
 
 // PWM duty cycle vars
 volatile int control ;
@@ -193,7 +194,7 @@ void on_pwm_wrap() {
 
     // LOW PASS FILTER
     filt_control = (control_filt_coeff * (float) new_control) + ((1.0 - control_filt_coeff) * filt_control) ;
-    filt_video = (0.3 * (float) new_control) + ((0.7) * filt_video) ;
+    filt_video = (0.2 * (float) new_control) + ((0.8) * filt_video) ;
 
     // Update volatile control var to enact pwm changes calculated
     control = (int)filt_control ;
@@ -327,6 +328,9 @@ static PT_THREAD (protothread_vga(struct pt *pt))
             setCursor(450, 80) ;
             writeString("Kd: ") ;
             writeString(div_buffer) ;
+            setCursor(450, 90) ;
+            writeString("dt: ") ;
+            writeString(timestep_buffer) ;
         }
         PT_YIELD(pt);
     }
@@ -355,9 +359,11 @@ static PT_THREAD (protothread_serial(struct pt *pt))
             serial_read ;
             // convert input string to number
             sscanf(pt_serial_in_buffer,"%d", &test_in) ;
+            // input validation
             if (test_in > 0) {
                 threshold = test_in ;
             }
+            snprintf(timestep_buffer, 10, "%.1d", threshold) ;
         }
         else if (classifier == 'a') {
             sprintf(pt_serial_out_buffer, "Enter target angle (float): ") ;
@@ -408,7 +414,6 @@ static PT_THREAD (protothread_serial(struct pt *pt))
             serial_write ;
             // for printed output
             snprintf(div_buffer, 10, "%.0f", Kd) ;
-            
         }
         PT_YIELD(pt);
     }
@@ -420,8 +425,8 @@ static PT_THREAD(protothread_debouncing(struct pt *pt))
   PT_BEGIN(pt);
 
   while(1) {
-    int i = gpio_get(PIN_BUTTON) ; // value of press
-    
+    int i = gpio_get(PIN_BUTTON) ; // value of press (low is pressed)
+
     // implementing this debouncing algorithm with switch for clarity rather than if statements
     switch (STATE_0) {
       case NOT_PRESSED :
@@ -430,11 +435,13 @@ static PT_THREAD(protothread_debouncing(struct pt *pt))
           possible = i ; 
         }
         break ;
-      case MAYBE_PRESSED :
-        if (i == possible) {
+      case MAYBE_PRESSED : 
+        if (i == possible) { // i = 0
           STATE_0 = PRESSED ;
-          PT_SEM_SIGNAL(pt, &sequence_semaphore) ;
-          printf("button") ;
+          // hang the controller while the button is pressed
+          targ_ang = -199 ;
+          // for printed output
+          snprintf(target_angle_buffer, 10, "%.1f", targ_ang) ;
         }
         else {
           STATE_0 = NOT_PRESSED ;
@@ -443,6 +450,7 @@ static PT_THREAD(protothread_debouncing(struct pt *pt))
       case PRESSED :
         if (i == 1) { // if the button is seen high again, maybe not pressed
           STATE_0 = MAYBE_NOT_PRESSED ;
+          PT_SEM_SIGNAL(pt, &sequence_semaphore) ; // the sequence will start when button is released
           possible = i ;
         }
         break ;
@@ -469,17 +477,10 @@ static PT_THREAD(protothread_sequence(struct pt *pt))
 
   while(1) {
     PT_SEM_WAIT(pt, &sequence_semaphore) ;
-    printf("meow") ;
 
     // t < 0, beam is vertically down
     // when button released:
     // t = 0 target angle horizontal
-    targ_ang = -199 ;
-    // integral_term = 0.0 ; // reset integral term for new target
-    // for printed output
-    snprintf(target_angle_buffer, 10, "%.1f", targ_ang) ;
-    PT_YIELD_usec(5000000) ; // yield 5 seconds
-
     targ_ang = 0;
     snprintf(target_angle_buffer, 10, "%.1f", targ_ang) ;
     PT_YIELD_usec(5000000) ; // yield 5 seconds
@@ -503,7 +504,6 @@ static PT_THREAD(protothread_sequence(struct pt *pt))
     integral_term = 0.0 ; // reset integral term for new target
     // for printed output
     snprintf(target_angle_buffer, 10, "%.1f", targ_ang) ;
-    
     
     PT_YIELD(pt) ;
   }
@@ -542,6 +542,7 @@ int main() {
     snprintf(prop_buffer, 10, "%.0f", Kp) ;
     snprintf(int_buffer, 10, "%.0f", Ki) ;
     snprintf(div_buffer, 10, "%.0f", Kd) ;
+    snprintf(timestep_buffer, 10, "%.0d", threshold);
 
     setCursor(450, 50) ;
     writeString("Target Angle: ") ;
