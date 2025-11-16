@@ -274,20 +274,83 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         // Compute max frequency in Hz
         max_freqency = max_fr_dex * (Fs/NUM_SAMPLES) ;
 
-        // TODO: COMMENT OFF THIS STUFF WHEN OVERCLOCKDONE
+        ////////////////////   Freq plot   ///////////////////////////////
         // Display on VGA
-        fillRect(250, 20, 176, 30, BLACK); // red box
-        sprintf(freqtext, "%d", (int)max_freqency) ;
-        setCursor(250, 20) ;
-        setTextSize(2) ;
-        writeString(freqtext) ;
+        // fillRect(250, 20, 176, 30, BLACK); // red box
+        // sprintf(freqtext, "%d", (int)max_freqency) ;
+        // setCursor(250, 20) ;
+        // setTextSize(2) ;
+        // writeString(freqtext) ;
 
-        // Update the FFT display
-        for (int i=5; i<(NUM_SAMPLES>>1); i++) {
-            drawVLine(59+i, 50, 429, BLACK);
-            height = fix2int15(multfix15(fr[i], int2fix15(36))) ;
-            drawVLine(59+i, 479-height, height, WHITE);
+        // // Update the FFT display
+        // for (int i=5; i<(NUM_SAMPLES>>1); i++) {
+        //     drawVLine(59+i, 50, 429, BLACK);
+        //     height = fix2int15(multfix15(fr[i], int2fix15(36))) ;
+        //     drawVLine(59+i, 479-height, height, WHITE);
+        // }
+        ////////////////////   Freq plot end  ////////////////////////////
+
+        /////////////////// spectrogram //////////////////////////////////
+
+        //TODO: OPTIMIZE THE CONSTANTS OUT OF THE LOOP AND PUT THEM IN #DEFS OR ELSEWHERE IN THREAD BEFORE LOOP
+        // track current time (x-coord)
+        static int time_x = 64;
+
+        // graph layout consts
+        const int SPECTRO_Y_START = 50;
+        const int SPECTRO_HEIGHT = 256;
+        const int SPECTRO_WIDTH = 512;
+        const int SPECTRO_X_START = 64;
+        const int SPECTRO_Y_END = SPECTRO_Y_START + SPECTRO_HEIGHT;
+        const int SPECTRO_X_END = SPECTRO_X_START + SPECTRO_WIDTH;
+
+        // draw new vertical time slice
+        for (int i = 0; i < SPECTRO_HEIGHT; i++) {
+            // i = freq bin index (0-255)
+
+            // TODO: CHECK IF THIS IS NECESSARY
+            // skip first 5 bins (low-freq noise)
+            if (i < 5) {
+                drawPixel(time_x, SPECTRO_Y_START + i, BLACK);
+                continue;
+            }
+
+            // scale magnitude 
+            int scaled_mag = fix2int15(multfix15(fr[i], int2fix15(36)));
+
+            // TODO: IF NEEDED, TUNE MAGS USING THIS INFO: https://vanhunteradams.com/Spectrogram/Spectrogram.html
+            // map scaled mag to color
+            // these thresholds need to be tuned
+            // color spectrogram code
+            short color;
+            if(scaled_mag < 5) color = BLACK;
+            else if (scaled_mag < 20) color = BLUE;
+            else if (scaled_mag < 40) color = GREEN;
+            else if (scaled_mag < 70) color = CYAN;
+            else if (scaled_mag < 120) color = RED;
+            else if (scaled_mag < 200) color = YELLOW;
+            else color = WHITE;
+
+            // calculate y-coord
+            // plot bin zero at bottom, subtract i since vga origin is top left
+            int y_pixel = (SPECTRO_Y_START + SPECTRO_HEIGHT - 1) - i;
+
+            // draw pixel for this (time, freq)
+            drawPixel(time_x, y_pixel, color);
         }
+
+        // update time_x coord for next frame
+        time_x++;
+
+        // if at end, wraparound
+        if (time_x >= SPECTRO_X_END) {
+            time_x = SPECTRO_X_START;
+        }
+
+        // Clear next column over to make a scrolling effect and differentiate between timesteps post wraparound
+        drawVLine(time_x, SPECTRO_Y_START, SPECTRO_HEIGHT, BLACK);
+
+        /////////////////// spectrogram end //////////////////////////////
 
         spare_time = FRAME_RATE_30 - (time_us_32() - begin_time);
         // check if framerate is met 
