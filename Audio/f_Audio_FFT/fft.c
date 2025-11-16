@@ -4,7 +4,7 @@
  * This demonstration calculates an FFT of audio input, and
  * then displays that FFT on a 640x480 VGA display.
  * 
- * Core 0 computes and displays the FFT. Core 1 blinks the LED.
+ * Core 0 computes and displays the FFT.
  *
  * HARDWARE CONNECTIONS
  *  - GPIO 16 ---> VGA Hsync
@@ -27,6 +27,11 @@
 // Include VGA graphics library
 #include "vga16_graphics_v2.h"
 // Include standard libraries
+#include <hardware/gpio.h>
+#include <hardware/timer.h>
+#include <iso646.h>
+#include <pico/error.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,11 +39,14 @@
 // Include Pico libraries
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/divider.h"
 // Include hardware libraries
 #include "hardware/pio.h"
 #include "hardware/dma.h"
 #include "hardware/adc.h"
 #include "hardware/irq.h"
+#include "hardware/clocks.h"
+#include "hardware/pll.h"
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
 
@@ -54,6 +62,7 @@ typedef signed int fix15 ;
 #define int2fix15(a) ((fix15)(a << 15))
 #define fix2int15(a) ((int)(a >> 15))
 #define char2fix15(a) (fix15)(((fix15)(a)) << 15)
+///////////////////////// FIX END /////////////////////////////////
 
 /////////////////////////// ADC configuration ////////////////////////////////
 // ADC Channel and pin
@@ -75,6 +84,13 @@ typedef signed int fix15 ;
 // DMA channels for sampling ADC
 int sample_chan ;
 int control_chan ;
+
+//////////////////////////////// ADC END ////////////////////////////// 
+
+// FRAME RATE AND CLOCK SPEED
+#define FRAME_RATE_30 33000 // ~30fps
+#define FRAME_RATE_60 66000 // ~60fps
+#define CLOCK_SPEED 250000
 
 // Max and min macros
 #define max(a,b) ((a>b)?a:b)
@@ -200,6 +216,9 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     static float max_freqency ;     // holds max frequency
     static int i ;                  // incrementing loop variable
 
+    // Statics for time
+    static uint32_t begin_time;
+    static int spare_time;
     static fix15 max_fr ;           // temporary variable for max freq calculation
     static int max_fr_dex ;         // index of max frequency
 
@@ -207,15 +226,6 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     setTextColor(WHITE) ;
     setCursor(65, 0) ;
     setTextSize(1) ;
-    writeString("Raspberry Pi Pico") ;
-    setCursor(65, 10) ;
-    writeString("FFT demo") ;
-    setCursor(65, 20) ;
-    writeString("Hunter Adams") ;
-    setCursor(65, 30) ;
-    writeString("vha3@cornell.edu") ;
-    setCursor(250, 0) ;
-    setTextSize(2) ;
     writeString("Max freqency:") ;
 
     // Will be used to write dynamic text to screen
@@ -223,6 +233,9 @@ static PT_THREAD (protothread_fft(struct pt *pt))
 
 
     while(1) {
+        // get start time to facilitate clamping frame rate to 30 fps
+        begin_time = time_us_32();
+
         // Wait for NUM_SAMPLES samples to be gathered
         // Measure wait time with timer. THIS IS BLOCKING
         dma_channel_wait_for_finish_blocking(sample_chan);
@@ -261,6 +274,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         // Compute max frequency in Hz
         max_freqency = max_fr_dex * (Fs/NUM_SAMPLES) ;
 
+        // TODO: COMMENT OFF THIS STUFF WHEN OVERCLOCKDONE
         // Display on VGA
         fillRect(250, 20, 176, 30, BLACK); // red box
         sprintf(freqtext, "%d", (int)max_freqency) ;
@@ -275,31 +289,32 @@ static PT_THREAD (protothread_fft(struct pt *pt))
             drawVLine(59+i, 479-height, height, WHITE);
         }
 
+        spare_time = FRAME_RATE_30 - (time_us_32() - begin_time);
+        // check if framerate is met 
+        if (spare_time < 0) {
+            gpio_put(LED, 1);
+        }
+        else {
+            gpio_put(LED, 0);
+        }
+
+        PT_YIELD_usec(spare_time);
+        // don't exit this while loop
     }
     PT_END(pt) ;
 }
 
-static PT_THREAD (protothread_blink(struct pt *pt))
-{
-    // Indicate beginning of thread
-    PT_BEGIN(pt) ;
-    while (1) {
-        // Toggle LED, then wait half a second
-        gpio_put(LED, !gpio_get(LED)) ;
-        PT_YIELD_usec(500000) ;
-    }
-    PT_END(pt) ;
-}
-
-// Core 1 entry point (main() for core 1)
-void core1_entry() {
-    // Add and schedule threads
-    pt_add_thread(protothread_blink) ;
-    pt_schedule_start ;
-}
+// // Core 1 entry point (main() for core 1)
+// void core1_entry() {
+//     // Add and schedule threads
+//     pt_add_thread(protothread_blink) ;
+//     pt_schedule_start ;
+// }
 
 // Core 0 entry point
 int main() {
+    // set overclock
+      set_sys_clock_khz(CLOCK_SPEED, true) ;
     // Initialize stdio
     stdio_init_all();
 
@@ -394,7 +409,7 @@ int main() {
     );
 
     // Launch core 1
-    multicore_launch_core1(core1_entry);
+    //multicore_launch_core1(core1_entry);
 
     // Add and schedule core 0 threads
     pt_add_thread(protothread_fft) ;
