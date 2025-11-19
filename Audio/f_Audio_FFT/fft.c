@@ -102,7 +102,7 @@ int control_chan ;
 #define CLOCK_SPEED 250000
 
 // drawing speed
-#define SCROLL_SPEED 2
+#define SCROLL_SPEED 1
 
 ////////////////// math/ fft /////////////////////////////////////////////
 // Max and min macros
