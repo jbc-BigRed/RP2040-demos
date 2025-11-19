@@ -71,12 +71,13 @@ typedef signed int fix15 ;
 #define int2fix15(a) ((fix15)(a << 15))
 #define fix2int15(a) ((int)(a >> 15))
 #define char2fix15(a) (fix15)(((fix15)(a)) << 15)
+#define divfix(a,b) (fix15)(div_s64s64( (((signed long long)(a)) << 15), ((signed long long)(b))))
 ///////////////////////// FIX END /////////////////////////////////
 
-/////////////////////////// ADC configuration ////////////////////////////////
+/////////////////////////// Audio ADC configuration ////////////////////////////////
 // ADC Channel and pin
-#define ADC_CHAN 0
-#define ADC_PIN 26
+#define ADC_AUDIO_CHAN 0
+#define ADC_AUDIO_PIN 26
 // Number of samples per FFT
 #define NUM_SAMPLES 1024
 // Number of samples per FFT, minus 1
@@ -94,15 +95,30 @@ typedef signed int fix15 ;
 int sample_chan ;
 int control_chan ;
 
-//////////////////////////////// ADC END ////////////////////////////// 
+//////////////////////////////// Audio ADC END ////////////////////////////// 
+
+//////////////////// Pot ADC Configuration //////////////////
+// ADC Channel and pin
+#define ADC_POT_CHAN 1
+#define ADC_POT_PIN 27
+
+const int MAX_SCROLL_SPEED = 10 ;
+const int MAX_CENTER_FREQ = 800 ;
+const float MAX_SCALING_FACTOR = 100.0 ;
+
+volatile int SCROLL_SPEED = 8 ; // drawing speed
+volatile int CENTER_FREQ = 0 ; // tuning center frequency
+volatile float SCALING_FACTOR = 60.0; // sensitivity
+
+char pot_text_buffer[10] ;
+//////////////////// Pot ADC END //////////////////
+
 
 // FRAME RATE AND CLOCK SPEED
 #define FRAME_RATE_30 33000 // ~30fps
 #define FRAME_RATE_60 16500 // ~60fps
 #define CLOCK_SPEED 250000
 
-// drawing speed
-#define SCROLL_SPEED 8
 
 ////////////////// math/ fft /////////////////////////////////////////////
 // Max and min macros
@@ -324,7 +340,6 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     static int freq_bin_index;
     static int scaled_mag;
     static float float_magnitude;
-    const float SCALING_FACTOR = 60.0;
 
     while(1) {
         // get start time to facilitate clamping frame rate to 30 fps
@@ -744,6 +759,60 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
   PT_END(pt) ;
 } // thread for tune FSM
 
+static PT_THREAD (protothread_pot_ADC(struct pt *pt))
+{
+    // Indicate thread beginning
+    PT_BEGIN(pt) ;
+
+    // Variables for maintaining frame rate
+    static int spare_time ;
+    static uint32_t begin_time ;
+
+    while(1) {
+        // Measure time at start of thread
+        begin_time = time_us_32() ;
+
+        // average the ADC reads to make sure that the noise is averaged out
+        uint32_t adc_sum = 0 ;
+        for (int i = 0; i < 16; i++) {
+        adc_sum += adc_read() ;
+        }
+        uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
+
+        // now do the potentiometer function based on what the other thread said
+        switch (pot_funct) {
+            fix15 imm_prod;
+            case INIT : // idk if we need this, can change later
+            // does nothing 
+            break ;
+            case MOD_SCROLL_SPEED :
+                imm_prod = multfix15(int2fix15(adc_filtered), (MAX_SCROLL_SPEED)); // Don't need to convert MAX_BALLS
+                SCROLL_SPEED = fix2int15(divfix(imm_prod, 4096));
+                sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
+            break ;
+            case MOD_CENTER_FREQ :
+                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ));
+                CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
+                sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
+            break ;
+            case MOD_SCALING_FACTOR :
+                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR));
+                SCALING_FACTOR = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
+                sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
+            break ;
+        }
+    }
+
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+
+    // Indicate thread end
+    PT_END(pt) ;
+} // computes the trimming of the potentiometer
+
 // on core1
 static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
 {
@@ -768,7 +837,8 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         writeString(tuning_state_buffer) ;
 
         // display potentiometer state
-        setCursor(300, 10) ;
+        setCursor(400, 10) ;
+        strcat(pot_state_buffer, pot_text_buffer) ;
         writeString(pot_state_buffer) ;
 
         PT_YIELD_usec(30000) ;
@@ -810,14 +880,14 @@ int main() {
     // ============================== ADC CONFIGURATION ==========================
     //////////////////////////////////////////////////////////////////////////////
     // Init GPIO for analogue use: hi-Z, no pulls, disable digital input buffer.
-    adc_gpio_init(ADC_PIN);
+    adc_gpio_init(ADC_AUDIO_PIN);
 
     // Initialize the ADC harware
     // (resets it, enables the clock, spins until the hardware is ready)
     adc_init() ;
 
     // Select analog mux input (0...3 are GPIO 26, 27, 28, 29; 4 is temp sensor)
-    adc_select_input(ADC_CHAN) ;
+    adc_select_input(ADC_AUDIO_CHAN) ;
 
     // Setup the FIFO
     adc_fifo_setup(
