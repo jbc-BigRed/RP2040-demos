@@ -15,6 +15,15 @@
  *  - GPIO 21 ---> 330 ohm resistor ---> VGA Red
  *  - RP2040 GND ---> VGA GND
  *  - GPIO 26 ---> Audio input [0-3.3V]
+
+     KEYPAD CONNECTIONS
+    - GPIO 9   -->  330 ohms  --> Pin 1 (button row 1)
+    - GPIO 10  -->  330 ohms  --> Pin 2 (button row 2)
+    - GPIO 11  -->  330 ohms  --> Pin 3 (button row 3)
+    - GPIO 12  -->  330 ohms  --> Pin 4 (button row 4)
+    - GPIO 13  -->     Pin 5 (button col 1)
+    - GPIO 14  -->     Pin 6 (button col 2)
+    - GPIO 15  -->     Pin 7 (button col 3)
  *
  * RESOURCES USED
  *  - PIO state machines 0, 1, and 2 on PIO instance 0
@@ -77,7 +86,7 @@ typedef signed int fix15 ;
 // Log2 number of samples
 #define LOG2_NUM_SAMPLES 10
 // Sample rate (Hz)
-#define Fs 10000.0
+#define Fs 30000.0 // affects bin size
 // ADC clock rate (unmutable!)
 #define ADCCLK 48000000.0
 
@@ -89,9 +98,13 @@ int control_chan ;
 
 // FRAME RATE AND CLOCK SPEED
 #define FRAME_RATE_30 33000 // ~30fps
-#define FRAME_RATE_60 66000 // ~60fps
+#define FRAME_RATE_60 16500 // ~60fps
 #define CLOCK_SPEED 250000
 
+// drawing speed
+#define SCROLL_SPEED 2
+
+////////////////// math/ fft /////////////////////////////////////////////
 // Max and min macros
 #define max(a,b) ((a>b)?a:b)
 #define min(a,b) ((a<b)?a:b)
@@ -109,9 +122,34 @@ fix15 fi[NUM_SAMPLES] ;
 fix15 Sinewave[NUM_SAMPLES]; 
 // Hann window table for FFT calculation
 fix15 window[NUM_SAMPLES]; 
+////////////////////////////// fft end////////////////////////////////////
 
 // Pointer to address of start of sample buffer
 uint8_t * sample_address_pointer = &sample_array[0] ;
+
+///////////////////// Constants for keypad ///////////////////////////////
+// Keypad pin configurations
+#define BASE_KEYPAD_PIN 9
+#define KEYROWS         4
+#define NUMKEYS         12
+unsigned int keycodes[12] = {   0x28, 0x11, 0x21, 0x41, 0x12,
+                                0x22, 0x42, 0x14, 0x24, 0x44,
+                                0x18, 0x48} ;
+unsigned int scancodes[4] = {   0x01, 0x02, 0x04, 0x08} ;
+unsigned int button = 0x70 ;
+
+// Constants for debouncing state machine for keypad
+#define NOT_PRESSED 0
+#define MAYBE_PRESSED 1
+#define PRESSED 2
+#define MAYBE_NOT_PRESSED 3
+volatile int possible = 0 ;
+volatile unsigned int STATE_0 = NOT_PRESSED ;
+char notes[12][6] = {"C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B"} ; // mapping to the keycodes (index i)
+char desired_note_buffer[30] = "Desired Tuning Note: "; // for outputting note on the VGA display
+char current_note[6] = "None" ;
+/////////////////////////////////// keypad end ///////////////////////////
+
 
 // Peforms an in-place FFT. For more information about how this
 // algorithm works, please see https://vanhunteradams.com/FFT/FFT.html
@@ -226,11 +264,25 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     setTextColor(WHITE) ;
     setCursor(65, 0) ;
     setTextSize(1) ;
-    writeString("Max freqency:") ;
 
     // Will be used to write dynamic text to screen
     static char freqtext[40];
 
+    // graph layout consts
+    const int SPECTRO_Y_START = 0;
+    const int SPECTRO_HEIGHT = 480;
+    const int SPECTRO_WIDTH = 640;
+    const int SPECTRO_X_START = 0;
+    const int SPECTRO_Y_END = SPECTRO_Y_START + SPECTRO_HEIGHT;
+    const int SPECTRO_X_END = SPECTRO_X_START + SPECTRO_WIDTH;
+
+    // track current time (x-coord)
+    static int time_x = 0;
+    static int y_pixel;
+    static int freq_bin_index;
+    static int scaled_mag;
+    static float float_magnitude;
+    const float SCALING_FACTOR = 30.0;
 
     while(1) {
         // get start time to facilitate clamping frame rate to 30 fps
@@ -257,7 +309,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         FFTfix(fr, fi) ;
 
         // Find the magnitudes (alpha max plus beta min)
-        for (int i = 0; i < (NUM_SAMPLES>>1); i++) {  
+        for (i = 0; i < (NUM_SAMPLES>>1); i++) {  
             // get the approx magnitude
             fr[i] = abs(fr[i]); 
             fi[i] = abs(fi[i]);
@@ -292,32 +344,31 @@ static PT_THREAD (protothread_fft(struct pt *pt))
 
         /////////////////// spectrogram //////////////////////////////////
 
-        //TODO: OPTIMIZE THE CONSTANTS OUT OF THE LOOP AND PUT THEM IN #DEFS OR ELSEWHERE IN THREAD BEFORE LOOP
-        // track current time (x-coord)
-        static int time_x = 64;
-
-        // graph layout consts
-        const int SPECTRO_Y_START = 50;
-        const int SPECTRO_HEIGHT = 256;
-        const int SPECTRO_WIDTH = 512;
-        const int SPECTRO_X_START = 64;
-        const int SPECTRO_Y_END = SPECTRO_Y_START + SPECTRO_HEIGHT;
-        const int SPECTRO_X_END = SPECTRO_X_START + SPECTRO_WIDTH;
+        // TODO: OPTIMIZE THE CONSTANTS OUT OF THE LOOP AND PUT THEM IN #DEFS OR ELSEWHERE IN THREAD BEFORE LOOP
 
         // draw new vertical time slice
-        for (int i = 0; i < SPECTRO_HEIGHT; i++) {
+        for (i = 0; i < SPECTRO_HEIGHT; i++) {
             // i = freq bin index (0-255)
+            freq_bin_index = (480-1) - i;
 
             // TODO: CHECK IF THIS IS NECESSARY
             // skip first 5 bins (low-freq noise)
             if (i < 5) {
-                drawPixel(time_x, SPECTRO_Y_START + i, BLACK);
+                fillRect(time_x, SPECTRO_Y_START + i, SCROLL_SPEED, 1, BLACK);
+                // drawPixel(time_x, SPECTRO_Y_START + i, BLACK);
                 continue;
             }
-
+            
+            float_magnitude = fix2float15(fr[freq_bin_index]);
             // scale magnitude 
-            int scaled_mag = fix2int15(multfix15(fr[i], int2fix15(36)));
+            scaled_mag = (int)(float_magnitude * SCALING_FACTOR);
+            //int scaled_mag = fix2int15(multfix15(fr[i], int2fix15(36)));
+            scaled_mag = max(0, min(255, scaled_mag));
 
+            scaled_mag = fix2int15(multfix15(fr[freq_bin_index], int2fix15(30)));
+
+            if (scaled_mag < 0) scaled_mag = 0;
+            if (scaled_mag > 255) scaled_mag = 255;
             // TODO: IF NEEDED, TUNE MAGS USING THIS INFO: https://vanhunteradams.com/Spectrogram/Spectrogram.html
             // map scaled mag to color
             // these thresholds need to be tuned
@@ -333,14 +384,16 @@ static PT_THREAD (protothread_fft(struct pt *pt))
 
             // calculate y-coord
             // plot bin zero at bottom, subtract i since vga origin is top left
-            int y_pixel = (SPECTRO_Y_START + SPECTRO_HEIGHT - 1) - i;
+            //int y_pixel = (SPECTRO_Y_START + SPECTRO_HEIGHT - 1) - i;
+            y_pixel = SPECTRO_Y_START + i;
 
             // draw pixel for this (time, freq)
-            drawPixel(time_x, y_pixel, color);
+            //drawPixel(time_x, y_pixel, color);
+            fillRect(time_x, y_pixel, SCROLL_SPEED, 1, color);
         }
 
         // update time_x coord for next frame
-        time_x++;
+        time_x += SCROLL_SPEED;
 
         // if at end, wraparound
         if (time_x >= SPECTRO_X_END) {
@@ -348,18 +401,14 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         }
 
         // Clear next column over to make a scrolling effect and differentiate between timesteps post wraparound
-        drawVLine(time_x, SPECTRO_Y_START, SPECTRO_HEIGHT, BLACK);
+        // drawVLine(time_x, SPECTRO_Y_START, SPECTRO_HEIGHT, BLACK);
 
         /////////////////// spectrogram end //////////////////////////////
 
         spare_time = FRAME_RATE_30 - (time_us_32() - begin_time);
         // check if framerate is met 
-        if (spare_time < 0) {
-            gpio_put(LED, 1);
-        }
-        else {
-            gpio_put(LED, 0);
-        }
+        if (spare_time < 0) gpio_put(LED, 1);
+        else gpio_put(LED, 0);
 
         PT_YIELD_usec(spare_time);
         // don't exit this while loop
@@ -367,17 +416,122 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     PT_END(pt) ;
 }
 
-// // Core 1 entry point (main() for core 1)
-// void core1_entry() {
-//     // Add and schedule threads
-//     pt_add_thread(protothread_blink) ;
-//     pt_schedule_start ;
-// }
+// run on core1
+static PT_THREAD (protothread_debounce(struct pt *pt)) 
+{
+    // Indicate thread beginning
+    PT_BEGIN(pt) ;
+
+    // Some variables
+    // incrementer for looping
+    static int i ;
+    // keypad variable to track button presses
+    static uint32_t keypad ;
+    // maps to active key for retrigger purposes
+    static int active_key = -1 ;
+
+    while(1) {
+        // Below code until else (i=-1) ; is checking what the button pressed is, then after will implement state machine
+        // Scan the keypad!
+        for (i=0; i<KEYROWS; i++) {
+            // Set a row high
+            gpio_put_masked((0xF << BASE_KEYPAD_PIN), (scancodes[i] << BASE_KEYPAD_PIN)) ;
+            // Small delay required
+            sleep_us(1) ;
+            // Read the keycode
+            keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F) ;
+            // Break if button(s) are pressed
+            if (keypad & button) break ;
+        }
+        // If we found a button . . .
+        if (keypad & button) {
+            // Look for a valid keycode.
+            for (i=0; i<NUMKEYS; i++) {
+                if (keypad == keycodes[i]) break ;
+            }
+            // If we don't find one, report invalid keycode
+            if (i==NUMKEYS) (i = -1) ;
+        }
+        // Otherwise, indicate invalid/non-pressed buttons
+        else (i=-1) ;
+
+        // implementing this debouncing algorithm with switch for clarity rather than if statements
+        // STATE_0 = NOT_PRESSED upon initialization
+        switch (STATE_0) {
+        case NOT_PRESSED :
+            if (i != -1) { // if the scan is valid
+            STATE_0 = MAYBE_PRESSED ;
+            possible = i ; 
+            }
+            break ;
+        case MAYBE_PRESSED :
+            if (i == possible) {
+            STATE_0 = PRESSED ;
+            strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
+            }
+            else {
+            STATE_0 = NOT_PRESSED ;
+            }
+            break ;
+        case PRESSED :
+            if (possible != i) { // if the button not the same, maybe not pressed
+            STATE_0 = MAYBE_NOT_PRESSED ;
+            }
+            break ;
+        case MAYBE_NOT_PRESSED :
+            if (possible == i) { //  possible is 1 right now, so if it is high send to not pressed
+            STATE_0 = PRESSED ;
+            }
+            else {
+            STATE_0 = NOT_PRESSED ;
+            }
+            break ;
+        }
+        PT_YIELD(pt) ;
+    }
+    // Indicate thread end
+    PT_END(pt) ;
+} // for keypad
+
+// on core1
+static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
+{
+    // Indicate thread beginning
+    PT_BEGIN(pt) ;
+
+    setTextColor(WHITE) ;
+    setTextSize(1) ;
+
+    while(1) {
+        fillRect(10, 10, 300, 20, BLACK) ;
+
+        // write note to desired_note_buffer
+        sprintf(desired_note_buffer, "Desired Tuning Note: %s", current_note);
+
+        // display the note
+        setCursor(10, 10) ;
+        writeString(desired_note_buffer) ;
+
+        PT_YIELD_usec(30000) ;
+    }
+    
+    // Indicate thread end
+    PT_END(pt) ;
+} // for text output on VGA
+
+
+// Core 1 entry point (main() for core 1)
+void core1_entry() {
+    // Add and schedule threads
+    pt_add_thread(protothread_debounce) ;
+    pt_add_thread(protothread_noncrit_vga) ;
+    pt_schedule_start ;
+}
 
 // Core 0 entry point
 int main() {
     // set overclock
-      set_sys_clock_khz(CLOCK_SPEED, true) ;
+    set_sys_clock_khz(CLOCK_SPEED, true) ;
     // Initialize stdio
     stdio_init_all();
 
@@ -472,7 +626,7 @@ int main() {
     );
 
     // Launch core 1
-    //multicore_launch_core1(core1_entry);
+    multicore_launch_core1(core1_entry);
 
     // Add and schedule core 0 threads
     pt_add_thread(protothread_fft) ;
