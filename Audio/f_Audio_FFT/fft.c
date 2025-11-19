@@ -86,7 +86,7 @@ typedef signed int fix15 ;
 // Log2 number of samples
 #define LOG2_NUM_SAMPLES 10
 // Sample rate (Hz)
-#define Fs 40000.0 // affects bin size
+#define Fs 10000.0 // affects bin size
 // ADC clock rate (unmutable!)
 #define ADCCLK 48000000.0
 
@@ -102,7 +102,7 @@ int control_chan ;
 #define CLOCK_SPEED 250000
 
 // drawing speed
-#define SCROLL_SPEED 1
+#define SCROLL_SPEED 8
 
 ////////////////// math/ fft /////////////////////////////////////////////
 // Max and min macros
@@ -135,6 +135,14 @@ uint8_t * sample_address_pointer = &sample_array[0] ;
 unsigned int keycodes[12] = {   0x28, 0x11, 0x21, 0x41, 0x12,
                                 0x22, 0x42, 0x14, 0x24, 0x44,
                                 0x18, 0x48} ;
+                            // 0, 1, 2, 3, 4
+                            // 5, 6, 7, 8, 9
+                            // *, #
+
+                            // 1, 2, 3
+                            // 4, 5, 6
+                            // 7, 8, 9
+                            // *, 0, #
 unsigned int scancodes[4] = {   0x01, 0x02, 0x04, 0x08} ;
 unsigned int button = 0x70 ;
 
@@ -144,11 +152,45 @@ unsigned int button = 0x70 ;
 #define PRESSED 2
 #define MAYBE_NOT_PRESSED 3
 volatile int possible = 0 ;
-volatile unsigned int STATE_0 = NOT_PRESSED ;
-char notes[12][6] = {"C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B"} ; // mapping to the keycodes (index i)
+volatile unsigned int KEYPAD_STATE = NOT_PRESSED ;
+char notes[12][6] = {"A#/Bb", "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "B"} ; // mapping to the keycodes (index i)
 char desired_note_buffer[30] = "Desired Tuning Note: "; // for outputting note on the VGA display
 char current_note[6] = "None" ;
 /////////////////////////////////// keypad end ///////////////////////////
+
+
+//////////////////////// Constants for input mode state machine ///////////////////////////
+// debouncing inputs
+//volatile unsigned int D_STATE = NOT_PRESSED ; // state variable for debouncer
+
+// state machine variables - potentiometer button pressing
+#define PIN_POT_BUTTON 5 // gpio 5 (pin 7)
+// states
+#define INIT 0 // potentiometer has no impact
+#define MOD_SCROLL_SPEED 1 // to adjust the scroll speed, increases rectangle size
+#define MOD_CENTER_FREQ 2 // to adjust the center frequency of tuning
+#define MOD_SCALING_FACTOR 3 // how much to multiply the values for the heat map (sensitivity)
+volatile unsigned int POT_STATE = INIT ; // initalize the state of this fsm
+volatile unsigned int P_CYCLE_STATE = INIT ;
+char pot_state_buffer[40] ; // buffer for snprintf for the current state
+volatile int pot_funct = INIT ; // function of potentiometer, initialized at INIT, can be ADJUST_BALLS, ADJUST_BOUNCE
+volatile int p_possible = 0 ;
+//volatile int pot_btn_pressed = 0 ; // for initiating the pot cycle
+static struct pt_sem pot_btn_pressed ;
+
+
+// button for tuning enable
+#define PIN_TUNE_BUTTON 22 // GPIO 2 (pin 29)
+#define TUNE_DIS 0 // initialize on no tuning
+#define TUNE_EN 1 // enable tuning on a button press
+char tuning_state_buffer[17] ; // for vga
+volatile unsigned int TUNE_STATE = TUNE_DIS ;
+volatile unsigned int T_CYCLE_STATE = TUNE_DIS ;
+volatile int tune_funct = INIT ;
+//volatile int tune_btn_pressed = 0 ; // for initiating the pot cycle
+static struct pt_sem tune_btn_pressed ;
+volatile int t_possible = 0 ;
+///////////////////////// input state machine end /////////////////////////////////////////
 
 
 // Peforms an in-place FFT. For more information about how this
@@ -243,15 +285,15 @@ static PT_THREAD (protothread_fft(struct pt *pt))
 {
     // Indicate beginning of thread
     PT_BEGIN(pt) ;
-    printf("Starting capture\n") ;
+    // printf("Starting capture\n") ;
     // Start the ADC channel
     dma_start_channel_mask((1u << sample_chan)) ;
     // Start the ADC
     adc_run(true) ;
 
     // Declare some static variables
-    static int height ;             // for scaling display
-    static float max_freqency ;     // holds max frequency
+    // static int height ;             // for scaling display
+    // static float max_freqency ;     // holds max frequency
     static int i ;                  // incrementing loop variable
 
     // Statics for time
@@ -324,7 +366,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
             }
         }
         // Compute max frequency in Hz
-        max_freqency = max_fr_dex * (Fs/NUM_SAMPLES) ;
+        //max_freqency = max_fr_dex * (Fs/NUM_SAMPLES) ;
 
         ////////////////////   Freq plot   ///////////////////////////////
         // Display on VGA
@@ -380,7 +422,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
             else if (scaled_mag < 20) color = BLUE;
             else if (scaled_mag < 40) color = GREEN;
             else if (scaled_mag < 70) color = CYAN;
-            else if (scaled_mag < 120) color = RED;
+            else if (scaled_mag < 180) color = RED;
             else if (scaled_mag < 200) color = YELLOW;
             else color = WHITE;
 
@@ -407,19 +449,20 @@ static PT_THREAD (protothread_fft(struct pt *pt))
 
         /////////////////// spectrogram end //////////////////////////////
 
-        spare_time = FRAME_RATE_30 - (time_us_32() - begin_time);
-        // check if framerate is met 
-        if (spare_time < 0) gpio_put(LED, 1);
-        else gpio_put(LED, 0);
+        // spare_time = FRAME_RATE_30 - (time_us_32() - begin_time);
+        // // check if framerate is met 
+        // if (spare_time < 0) gpio_put(LED, 1);
+        // else gpio_put(LED, 0);
 
-        PT_YIELD_usec(spare_time);
+        // PT_YIELD_usec(spare_time);
+        PT_YIELD(pt);
         // don't exit this while loop
     }
     PT_END(pt) ;
 }
 
 // run on core1
-static PT_THREAD (protothread_debounce(struct pt *pt)) 
+static PT_THREAD (protothread_keypad_debounce(struct pt *pt)) 
 {
     // Indicate thread beginning
     PT_BEGIN(pt) ;
@@ -437,9 +480,10 @@ static PT_THREAD (protothread_debounce(struct pt *pt))
         // Scan the keypad!
         for (i=0; i<KEYROWS; i++) {
             // Set a row high
-            gpio_put_masked((0xF << BASE_KEYPAD_PIN), (scancodes[i] << BASE_KEYPAD_PIN)) ;
+            gpio_put_masked((0xF << BASE_KEYPAD_PIN),
+                            (scancodes[i] << BASE_KEYPAD_PIN)) ;
             // Small delay required
-            sleep_us(1) ;
+            sleep_us(1) ; 
             // Read the keycode
             keypad = ((gpio_get_all() >> BASE_KEYPAD_PIN) & 0x7F) ;
             // Break if button(s) are pressed
@@ -457,35 +501,38 @@ static PT_THREAD (protothread_debounce(struct pt *pt))
         // Otherwise, indicate invalid/non-pressed buttons
         else (i=-1) ;
 
+        // // Print key to terminal
+        printf("\n%d", i) ;
+
         // implementing this debouncing algorithm with switch for clarity rather than if statements
-        // STATE_0 = NOT_PRESSED upon initialization
-        switch (STATE_0) {
+        // KEYPAD_STATE = NOT_PRESSED upon initialization
+        switch (KEYPAD_STATE) {
         case NOT_PRESSED :
             if (i != -1) { // if the scan is valid
-            STATE_0 = MAYBE_PRESSED ;
+            KEYPAD_STATE = MAYBE_PRESSED ;
             possible = i ; 
             }
             break ;
         case MAYBE_PRESSED :
             if (i == possible) {
-            STATE_0 = PRESSED ;
+            KEYPAD_STATE = PRESSED ;
             strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
             }
             else {
-            STATE_0 = NOT_PRESSED ;
+            KEYPAD_STATE = NOT_PRESSED ;
             }
             break ;
         case PRESSED :
             if (possible != i) { // if the button not the same, maybe not pressed
-            STATE_0 = MAYBE_NOT_PRESSED ;
+            KEYPAD_STATE = MAYBE_NOT_PRESSED ;
             }
             break ;
         case MAYBE_NOT_PRESSED :
             if (possible == i) { //  possible is 1 right now, so if it is high send to not pressed
-            STATE_0 = PRESSED ;
+            KEYPAD_STATE = PRESSED ;
             }
             else {
-            STATE_0 = NOT_PRESSED ;
+            KEYPAD_STATE = NOT_PRESSED ;
             }
             break ;
         }
@@ -494,6 +541,208 @@ static PT_THREAD (protothread_debounce(struct pt *pt))
     // Indicate thread end
     PT_END(pt) ;
 } // for keypad
+
+// Input button debouncing for potentiometer state management
+static PT_THREAD(protothread_POT_debouncing(struct pt *pt)) 
+{
+  PT_BEGIN(pt);
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+  
+  while(1) {
+    begin_time = time_us_32() ;
+
+    int p = gpio_get(PIN_POT_BUTTON) ; // value of pot button press
+   
+    // implementing this debouncing algorithm with switch for clarity rather than if statements
+    switch (POT_STATE) {
+      case NOT_PRESSED :
+        if (p == 0) { // if the button is low (pressed)
+          POT_STATE = MAYBE_PRESSED ;
+          p_possible = p ; 
+        }
+        break ;
+      case MAYBE_PRESSED :
+        if (p == p_possible) {
+            POT_STATE = PRESSED ;
+            PT_SEM_SIGNAL(pt, &pot_btn_pressed) ; // send flag, potFSM thread will be activated by this
+        }
+        else { 
+            POT_STATE = NOT_PRESSED ;
+        }
+        break ;
+      case PRESSED :
+        if (p == 1) { // if the button is seen high again, maybe not pressed
+            POT_STATE = MAYBE_NOT_PRESSED ;
+            p_possible = p ;
+        }
+        break ;
+      case MAYBE_NOT_PRESSED :
+        if (p == p_possible) { //  possible is 1 right now, so if it is high send to not pressed
+          POT_STATE = NOT_PRESSED ;
+        }
+        else {
+          POT_STATE = PRESSED ;
+        }
+        break ;
+    }
+    
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+  PT_END(pt) ;
+} // thread for the debouncing
+
+// Input button debouncing for potentiometer state management
+static PT_THREAD(protothread_tune_debouncing(struct pt *pt)) 
+{
+  PT_BEGIN(pt);
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+  
+  while(1) {
+    begin_time = time_us_32() ;
+
+    int t = gpio_get(PIN_TUNE_BUTTON) ; // value of tune button press
+
+    // implementing this debouncing algorithm with switch for clarity rather than if statements
+    switch (TUNE_STATE) {
+      case NOT_PRESSED :
+        if (t == 0) { // if the button is low (pressed)
+          TUNE_STATE = MAYBE_PRESSED ;
+          t_possible = t ; 
+        }
+        break ;
+      case MAYBE_PRESSED :
+        if (t == t_possible) {
+            TUNE_STATE = PRESSED ;
+            PT_SEM_SIGNAL(pt, &tune_btn_pressed) ; // send flag, potFSM thread will be activated
+        }
+        else {
+            TUNE_STATE = NOT_PRESSED ;
+        }
+        break ;
+      case PRESSED :
+        if (t == 1) {
+            TUNE_STATE = MAYBE_NOT_PRESSED ;
+            t_possible = t ;
+        }
+        break ;
+      case MAYBE_NOT_PRESSED :
+        if (t == t_possible) { //  possible is 1 right now, so if it is high send to not pressed
+          TUNE_STATE = NOT_PRESSED ;
+        }
+        else {
+          TUNE_STATE = PRESSED ;
+        }
+        break ;
+    }
+    
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+  PT_END(pt) ;
+} // thread for the debouncing
+
+// thread to manage state using debounced input
+static PT_THREAD(protothread_potFSM(struct pt *pt))
+{
+  PT_BEGIN(pt) ;
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+
+  while(1) {
+    // since this thread just cycles based on button presses, 
+    // can just wait until the flag is incremented, 
+    // and then restart STATE_1 in a loop without switch statements
+
+    PT_SEM_WAIT(pt, &pot_btn_pressed);
+
+    begin_time = time_us_32() ; // idk where to put this
+
+    P_CYCLE_STATE = (P_CYCLE_STATE + 1) % 4 ; // states 0 through 3, will loop when state reaches 3
+
+    switch (P_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
+      case INIT :
+        strcpy(pot_state_buffer, "INIT") ;
+        pot_funct = INIT ;
+      break ;
+      case MOD_SCROLL_SPEED :
+        strcpy(pot_state_buffer, "Adjusting scroll speed: ") ;
+        pot_funct = MOD_SCROLL_SPEED ;
+      break ;
+      case MOD_CENTER_FREQ :
+        strcpy(pot_state_buffer, "Adjusting center frequency: ") ;
+        pot_funct = MOD_CENTER_FREQ ;
+      break ;
+      case MOD_SCALING_FACTOR :
+        strcpy(pot_state_buffer, "Adjusting scaling factor: ") ;
+        pot_funct = MOD_SCALING_FACTOR ;
+      break ;
+    }
+
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+
+  PT_END(pt) ;
+} // thread for potentiometer FSM
+
+// thread to manage state using debounced input
+static PT_THREAD(protothread_tuneFSM(struct pt *pt))
+{
+  PT_BEGIN(pt) ;
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+
+  while(1) {
+    // since this thread just cycles based on button presses, 
+    // can just wait until the flag is incremented, 
+    // and then restart STATE_1 in a loop without switch statements
+
+    PT_SEM_WAIT(pt, &tune_btn_pressed);
+
+    begin_time = time_us_32() ; // idk where to put this
+
+    T_CYCLE_STATE = (T_CYCLE_STATE + 1) % 2 ; // states 0 through 1, will loop when state reaches 1
+
+    switch (T_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
+      case TUNE_DIS :
+        strcpy(tuning_state_buffer, "Tuning disabled") ;
+        tune_funct = TUNE_DIS ;
+      break ;
+      case TUNE_EN :
+        strcpy(tuning_state_buffer, "Tuning enabled") ;
+        tune_funct = TUNE_EN ;
+      break ;
+    }
+
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+
+  PT_END(pt) ;
+} // thread for tune FSM
 
 // on core1
 static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
@@ -505,7 +754,7 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
     setTextSize(1) ;
 
     while(1) {
-        fillRect(10, 10, 200, 20, BLACK) ;
+        fillRect(10, 10, 600, 20, BLACK) ;
 
         // write note to desired_note_buffer
         sprintf(desired_note_buffer, "Desired Tuning Note: %s", current_note);
@@ -513,6 +762,14 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         // display the note
         setCursor(10, 10) ;
         writeString(desired_note_buffer) ;
+
+        // display the tuning disabled/enabled
+        setCursor(200, 10) ;
+        writeString(tuning_state_buffer) ;
+
+        // display potentiometer state
+        setCursor(300, 10) ;
+        writeString(pot_state_buffer) ;
 
         PT_YIELD_usec(30000) ;
     }
@@ -525,7 +782,11 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
 // Core 1 entry point (main() for core 1)
 void core1_entry() {
     // Add and schedule threads
-    pt_add_thread(protothread_debounce) ;
+    pt_add_thread(protothread_keypad_debounce) ;
+    pt_add_thread(protothread_POT_debouncing) ;
+    pt_add_thread(protothread_tune_debouncing) ;
+    pt_add_thread(protothread_potFSM) ;
+    pt_add_thread(protothread_tuneFSM) ;
     pt_add_thread(protothread_noncrit_vga) ;
     pt_schedule_start ;
 }
@@ -627,6 +888,31 @@ int main() {
         false                               // Don't start immediately.
     );
 
+    ////////////////// KEYPAD INITS ///////////////////////
+    // Initialize the keypad GPIO's
+    gpio_init_mask((0x7F << BASE_KEYPAD_PIN)) ;
+    // Set row-pins to output
+    gpio_set_dir_out_masked((0xF << BASE_KEYPAD_PIN)) ;
+    // Set all output pins to low
+    gpio_put_masked((0xF << BASE_KEYPAD_PIN), (0x0 << BASE_KEYPAD_PIN)) ;
+    // Turn on pulldown resistors for column pins (on by default)
+    gpio_pull_down((BASE_KEYPAD_PIN + 4)) ;
+    gpio_pull_down((BASE_KEYPAD_PIN + 5)) ;
+    gpio_pull_down((BASE_KEYPAD_PIN + 6)) ;
+
+    // debouncing GPIO initialization
+    gpio_init(PIN_POT_BUTTON) ;
+    gpio_set_dir(PIN_POT_BUTTON, GPIO_IN); // set GPIO to input
+    gpio_pull_up(PIN_POT_BUTTON) ; // drive the pin normally high, if button pressed will be low
+
+    gpio_init(PIN_TUNE_BUTTON) ;
+    gpio_set_dir(PIN_TUNE_BUTTON, GPIO_IN); // set GPIO to input
+    gpio_pull_up(PIN_TUNE_BUTTON) ; // drive the pin normally high, if button pressed will be low
+
+    // initialize semiphores
+    PT_SEM_INIT(&pot_btn_pressed, 0);
+    PT_SEM_INIT(&tune_btn_pressed, 0);
+    
     // Launch core 1
     multicore_launch_core1(core1_entry);
 
