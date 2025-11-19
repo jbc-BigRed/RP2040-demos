@@ -86,7 +86,7 @@ typedef signed int fix15 ;
 // Log2 number of samples
 #define LOG2_NUM_SAMPLES 10
 // Sample rate (Hz)
-#define Fs 30000.0 // affects bin size
+#define Fs 40000.0 // affects bin size
 // ADC clock rate (unmutable!)
 #define ADCCLK 48000000.0
 
@@ -269,8 +269,8 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     static char freqtext[40];
 
     // graph layout consts
-    const int SPECTRO_Y_START = 0;
-    const int SPECTRO_HEIGHT = 480;
+    const int SPECTRO_Y_START = 20;
+    const int SPECTRO_HEIGHT = 460;
     const int SPECTRO_WIDTH = 640;
     const int SPECTRO_X_START = 0;
     const int SPECTRO_Y_END = SPECTRO_Y_START + SPECTRO_HEIGHT;
@@ -282,7 +282,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     static int freq_bin_index;
     static int scaled_mag;
     static float float_magnitude;
-    const float SCALING_FACTOR = 30.0;
+    const float SCALING_FACTOR = 60.0;
 
     while(1) {
         // get start time to facilitate clamping frame rate to 30 fps
@@ -349,7 +349,9 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         // draw new vertical time slice
         for (i = 0; i < SPECTRO_HEIGHT; i++) {
             // i = freq bin index (0-255)
-            freq_bin_index = (480-1) - i;
+            freq_bin_index = ((SPECTRO_HEIGHT-1) - i) >> 1;
+
+            if (freq_bin_index < 0) freq_bin_index = 0;
 
             // TODO: CHECK IF THIS IS NECESSARY
             // skip first 5 bins (low-freq noise)
@@ -503,7 +505,7 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
     setTextSize(1) ;
 
     while(1) {
-        fillRect(10, 10, 300, 20, BLACK) ;
+        fillRect(10, 10, 200, 20, BLACK) ;
 
         // write note to desired_note_buffer
         sprintf(desired_note_buffer, "Desired Tuning Note: %s", current_note);
