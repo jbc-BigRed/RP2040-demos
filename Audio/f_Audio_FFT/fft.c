@@ -230,7 +230,7 @@ fix15 note_frequencies[12] = {float2fix15(466.16), // A#/Bb
                               float2fix15(392), // G
                               float2fix15(415.30), // G#/Ab
                               float2fix15(440), // A
-                              float2fix15(493.8) // B
+                              float2fix15(493.88) // B
                               } ; // based on octave 4 tuning, matches index of notes array
 
 volatile int curr_tuning_note_idx = -1 ; // make it so no note is chosen initially
@@ -246,6 +246,7 @@ volatile fix15 lbound_freq = 0 ;
 volatile fix15 ubound_freq = 0 ;
 
 volatile int tuning_flag = 0 ; // if tuning is enabled, stay high. else low (will ensure that the bars are only redrawn when tuning enabled)
+volatile int detected_freq = 0; // current frequency being played
 
 ///////////////////////////////tuning stuff////////////////////////////////
 
@@ -430,6 +431,10 @@ static PT_THREAD (protothread_fft(struct pt *pt))
                 max_fr_dex = i ;
             }
         }
+        // for the actual tuning
+        // compute the dominant frequency
+        detected_freq = max_fr_dex * (Fs/NUM_SAMPLES) ; 
+
         // Compute max frequency in Hz
         //max_freqency = max_fr_dex * (Fs/NUM_SAMPLES) ;
 
@@ -907,9 +912,14 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
 
         // if tuning is enabled, display the tuning bars
         //if(tuning_flag) { // TODO: make sure that the spectrogram restarts everytime so this works and the lines dont stay there
+        
         if(1) {
+          // if ((detected_freq <= ubound_freq) && (detected_freq >= lbound_freq)) {
+            
+          // }
           drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, RED) ; // upper
           drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, RED) ; // lower
+          
         }
 
         // display potentiometer state
