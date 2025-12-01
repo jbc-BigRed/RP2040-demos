@@ -172,6 +172,7 @@ volatile unsigned int KEYPAD_STATE = NOT_PRESSED ;
 char notes[12][6] = {"A#/Bb", "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "B"} ; // mapping to the keycodes (index i)
 char desired_note_buffer[30] = "Desired Tuning Note: "; // for outputting note on the VGA display
 char current_note[6] = "None" ;
+int curr_note_idx = -1 ; // make it so no note is chosen
 /////////////////////////////////// keypad end ///////////////////////////
 
 
@@ -196,7 +197,7 @@ static struct pt_sem pot_btn_pressed ;
 
 
 // button for tuning enable
-#define PIN_TUNE_BUTTON 22 // GPIO 2 (pin 29)
+#define PIN_TUNE_BUTTON 22 // GPIO 22 (pin 29)
 #define TUNE_DIS 0 // initialize on no tuning
 #define TUNE_EN 1 // enable tuning on a button press
 char tuning_state_buffer[17] ; // for vga
@@ -207,6 +208,26 @@ volatile int tune_funct = INIT ;
 static struct pt_sem tune_btn_pressed ;
 volatile int t_possible = 0 ;
 ///////////////////////// input state machine end /////////////////////////////////////////
+
+
+///////////////////////////////tuning stuff////////////////////////////////
+fix15 note_frequencies[12] = {466.16, // A#/Bb
+                              261.63, // C
+                              277.18, // C#/Db
+                              293.66, // D
+                              311.13, // D#/Eb
+                              329.63, // E
+                              349.23, // F
+                              369.99, // F#/Gb
+                              392, // G
+                              415.30, // G#/Ab
+                              440, // A
+                              493.88 // B
+                              } ; // based on octave 4 tuning, matches index of notes array
+
+
+
+///////////////////////////////tuning stuff////////////////////////////////
 
 
 // Peforms an in-place FFT. For more information about how this
@@ -532,6 +553,7 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
             if (i == possible) {
             KEYPAD_STATE = PRESSED ;
             strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
+            curr_note_idx = i ;
             }
             else {
             KEYPAD_STATE = NOT_PRESSED ;
