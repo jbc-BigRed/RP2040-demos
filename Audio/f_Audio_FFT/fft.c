@@ -77,7 +77,7 @@ typedef signed int fix15 ;
 /////////////////////////// Audio ADC configuration ////////////////////////////////
 // ADC Channel and pin
 #define ADC_AUDIO_CHAN 0
-#define ADC_AUDIO_PIN 26
+#define ADC_AUDIO_PIN 26 // pin 31
 // Number of samples per FFT
 #define NUM_SAMPLES 1024
 // Number of samples per FFT, minus 1
@@ -100,7 +100,7 @@ int control_chan ;
 //////////////////// Pot ADC Configuration //////////////////
 // ADC Channel and pin
 #define ADC_POT_CHAN 1
-#define ADC_POT_PIN 27
+#define ADC_POT_PIN 27 // pin 32
 
 const int MAX_SCROLL_SPEED = 10 ;
 const int MAX_CENTER_FREQ = 800 ;
@@ -124,6 +124,15 @@ char pot_text_buffer[10] ;
 // Max and min macros
 #define max(a,b) ((a>b)?a:b)
 #define min(a,b) ((a<b)?a:b)
+
+// graph layout consts
+const int SPECTRO_Y_START = 20;
+const int SPECTRO_HEIGHT = 460;
+const int SPECTRO_WIDTH = 640;
+const int SPECTRO_X_START = 0;
+const int SPECTRO_Y_END = SPECTRO_Y_START + SPECTRO_HEIGHT;
+const int SPECTRO_X_END = SPECTRO_X_START + SPECTRO_WIDTH;
+volatile int time_x = 0;
 
 // 0.4 in fixed point (used for alpha max plus beta min)
 fix15 zero_point_4 = float2fix15(0.4) ;
@@ -172,7 +181,6 @@ volatile unsigned int KEYPAD_STATE = NOT_PRESSED ;
 char notes[12][6] = {"A#/Bb", "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "B"} ; // mapping to the keycodes (index i)
 char desired_note_buffer[30] = "Desired Tuning Note: "; // for outputting note on the VGA display
 char current_note[6] = "None" ;
-int curr_note_idx = -1 ; // make it so no note is chosen
 /////////////////////////////////// keypad end ///////////////////////////
 
 
@@ -211,23 +219,53 @@ volatile int t_possible = 0 ;
 
 
 ///////////////////////////////tuning stuff////////////////////////////////
-fix15 note_frequencies[12] = {466.16, // A#/Bb
-                              261.63, // C
-                              277.18, // C#/Db
-                              293.66, // D
-                              311.13, // D#/Eb
-                              329.63, // E
-                              349.23, // F
-                              369.99, // F#/Gb
-                              392, // G
-                              415.30, // G#/Ab
-                              440, // A
-                              493.88 // B
+fix15 note_frequencies[12] = {float2fix15(466.16), // A#/Bb
+                              float2fix15(261.63), // C
+                              float2fix15(277.18), // C#/Db
+                              float2fix15(293.66), // D
+                              float2fix15(311.13), // D#/Eb
+                              float2fix15(329.63), // E
+                              float2fix15(349.23), // F
+                              float2fix15(369.99), // F#/Gb
+                              float2fix15(392), // G
+                              float2fix15(415.30), // G#/Ab
+                              float2fix15(440), // A
+                              float2fix15(493.8) // B
                               } ; // based on octave 4 tuning, matches index of notes array
 
+volatile int curr_tuning_note_idx = -1 ; // make it so no note is chosen initially
+volatile fix15 curr_tuning_freq = 0 ;
 
+// the value to multiply the center frequency by to get the bounds to draw the horizontal tuning bars
+static fix15 cents_padding = float2fix15(1.0116194403) ; // based on 20 cents, 2^(cents/1200)
+//fix15 n_cents_padding = float2fix15(-1.0116194403) ; // negative bound
+// actual variables for the bounds of the lines
+volatile fix15 lbound_y = 0 ; 
+volatile fix15 ubound_y = 0 ;
+volatile fix15 lbound_freq = 0 ;
+volatile fix15 ubound_freq = 0 ;
+
+volatile int tuning_flag = 0 ; // if tuning is enabled, stay high. else low (will ensure that the bars are only redrawn when tuning enabled)
 
 ///////////////////////////////tuning stuff////////////////////////////////
+
+// converts the desired frequency into a y-value for the spectrogram
+// essentially normalizes the frequency graph to fit the VGA screen
+static inline int freq_2_spectro(fix15 frequency) {
+  //float freq = fix2float15(frequency) ;
+  fix15 bin = multfix15(frequency, float2fix15(NUM_SAMPLES / Fs)) ;
+
+  //float norm_val =  (float)(SPECTRO_HEIGHT - 1) / (float)(NUM_SAMPLES >> 1) ; // mirrors the for loop 
+  
+  // inverse of the way its done in the FFT
+  int y = (SPECTRO_HEIGHT - 1) - (fix2int15(bin) << 1) ;
+
+  // clamp the upper and lower bounds of the graph
+  if (y < 0) y = 0 ;
+  else if (y >= SPECTRO_HEIGHT) y = SPECTRO_HEIGHT - 1 ;
+
+  return SPECTRO_Y_START + y ;
+}
 
 
 // Peforms an in-place FFT. For more information about how this
@@ -347,16 +385,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     // Will be used to write dynamic text to screen
     static char freqtext[40];
 
-    // graph layout consts
-    const int SPECTRO_Y_START = 20;
-    const int SPECTRO_HEIGHT = 460;
-    const int SPECTRO_WIDTH = 640;
-    const int SPECTRO_X_START = 0;
-    const int SPECTRO_Y_END = SPECTRO_Y_START + SPECTRO_HEIGHT;
-    const int SPECTRO_X_END = SPECTRO_X_START + SPECTRO_WIDTH;
-
     // track current time (x-coord)
-    static int time_x = 0;
     static int y_pixel;
     static int freq_bin_index;
     static int scaled_mag;
@@ -552,8 +581,21 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
         case MAYBE_PRESSED :
             if (i == possible) {
             KEYPAD_STATE = PRESSED ;
+
             strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
-            curr_note_idx = i ;
+
+            curr_tuning_note_idx = i ; // set the i to the global index for the current note selected
+            curr_tuning_freq = note_frequencies[curr_tuning_note_idx] ; // current center frequency to tune to 
+
+            // reset cursor and black out screen
+            fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
+            time_x = SPECTRO_X_START;
+
+            // calculate the y-values of the horizontal line for tuning
+            ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
+            lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
+            ubound_y = freq_2_spectro(ubound_freq) ;
+            lbound_y = freq_2_spectro(lbound_freq) ;
             }
             else {
             KEYPAD_STATE = NOT_PRESSED ;
@@ -713,7 +755,7 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
 
     switch (P_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
       case INIT :
-        strcpy(pot_state_buffer, "INIT") ;
+        strcpy(pot_state_buffer, "Standby") ;
         pot_funct = INIT ;
       break ;
       case MOD_SCROLL_SPEED :
@@ -764,10 +806,12 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
       case TUNE_DIS :
         strcpy(tuning_state_buffer, "Tuning disabled") ;
         tune_funct = TUNE_DIS ;
+        tuning_flag = 0 ; 
       break ;
       case TUNE_EN :
         strcpy(tuning_state_buffer, "Tuning enabled") ;
         tune_funct = TUNE_EN ;
+        tuning_flag = 1 ; // enable drawing for tuning lines
       break ;
     }
 
@@ -794,6 +838,8 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
         // Measure time at start of thread
         begin_time = time_us_32() ;
 
+        //adc_select_input(ADC_POT_CHAN);  // Add this line
+
         // average the ADC reads to make sure that the noise is averaged out
         uint32_t adc_sum = 0 ;
         for (int i = 0; i < 16; i++) {
@@ -816,6 +862,7 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ));
                 CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
+                // need to update tuning array based of the center frequency
             break ;
             case MOD_SCALING_FACTOR :
                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR));
@@ -857,6 +904,13 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         // display the tuning disabled/enabled
         setCursor(200, 10) ;
         writeString(tuning_state_buffer) ;
+
+        // if tuning is enabled, display the tuning bars
+        //if(tuning_flag) { // TODO: make sure that the spectrogram restarts everytime so this works and the lines dont stay there
+        if(1) {
+          drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, RED) ; // upper
+          drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, RED) ; // lower
+        }
 
         // display potentiometer state
         setCursor(400, 10) ;
@@ -902,7 +956,8 @@ int main() {
     // ============================== ADC CONFIGURATION ==========================
     //////////////////////////////////////////////////////////////////////////////
     // Init GPIO for analogue use: hi-Z, no pulls, disable digital input buffer.
-    adc_gpio_init(ADC_AUDIO_PIN);
+    adc_gpio_init(ADC_AUDIO_PIN); // for audio
+    adc_gpio_init(ADC_POT_PIN); // for the pot
 
     // Initialize the ADC harware
     // (resets it, enables the clock, spins until the hardware is ready)
