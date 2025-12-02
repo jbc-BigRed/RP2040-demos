@@ -246,7 +246,7 @@ volatile fix15 lbound_freq = 0 ;
 volatile fix15 ubound_freq = 0 ;
 
 volatile int tuning_flag = 0 ; // if tuning is enabled, stay high. else low (will ensure that the bars are only redrawn when tuning enabled)
-volatile int detected_freq = 0; // current frequency being played
+volatile fix15 detected_freq = 0; // current frequency being played
 
 ///////////////////////////////tuning stuff////////////////////////////////
 
@@ -432,8 +432,8 @@ static PT_THREAD (protothread_fft(struct pt *pt))
             }
         }
         // for the actual tuning
-        // compute the dominant frequency
-        detected_freq = max_fr_dex * (Fs/NUM_SAMPLES) ; 
+        // compute the dominant frequency (max magnitude)
+        detected_freq = multfix15(int2fix15(max_fr_dex), float2fix15(Fs/NUM_SAMPLES)) ; // bin width = (Fs/NUM_SAMPLES)
 
         // Compute max frequency in Hz
         //max_freqency = max_fr_dex * (Fs/NUM_SAMPLES) ;
@@ -913,13 +913,15 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         // if tuning is enabled, display the tuning bars
         //if(tuning_flag) { // TODO: make sure that the spectrogram restarts everytime so this works and the lines dont stay there
         
-        if(1) {
-          // if ((detected_freq <= ubound_freq) && (detected_freq >= lbound_freq)) {
-            
-          // }
-          drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, RED) ; // upper
-          drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, RED) ; // lower
-          
+        if(tuning_flag == 1) {
+          if ((detected_freq <= ubound_freq) && (detected_freq >= lbound_freq)) {
+            drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, GREEN) ; // upper
+            drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, GREEN) ; // lower
+          }
+          else {
+            drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, RED) ; // upper
+            drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, RED) ; // lower
+          }      
         }
 
         // display potentiometer state
