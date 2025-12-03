@@ -268,6 +268,20 @@ static inline int freq_2_spectro(fix15 frequency) {
   return SPECTRO_Y_START + y ;
 }
 
+// allows the potentiometer ADC reads
+static inline uint32_t adc_for_pot() {
+  adc_select_input(ADC_POT_CHAN);
+
+  // average the ADC reads to make sure that the noise is averaged out
+  uint32_t adc_sum = 0 ;
+  for (int i = 0; i < 16; i++) {
+    adc_sum += adc_read() ;
+  }
+  uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
+
+  return adc_filtered ;
+}
+
 
 // Peforms an in-place FFT. For more information about how this
 // algorithm works, please see https://vanhunteradams.com/FFT/FFT.html
@@ -812,11 +826,17 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
         strcpy(tuning_state_buffer, "Tuning disabled") ;
         tune_funct = TUNE_DIS ;
         tuning_flag = 0 ; 
+        // reset cursor and black out screen
+        fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
+        time_x = SPECTRO_X_START;
       break ;
       case TUNE_EN :
         strcpy(tuning_state_buffer, "Tuning enabled") ;
         tune_funct = TUNE_EN ;
         tuning_flag = 1 ; // enable drawing for tuning lines
+        // reset cursor and black out screen
+        fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
+        time_x = SPECTRO_X_START;
       break ;
     }
 
@@ -843,45 +863,45 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
         // Measure time at start of thread
         begin_time = time_us_32() ;
 
-        //adc_select_input(ADC_POT_CHAN);  // Add this line
-
-        // average the ADC reads to make sure that the noise is averaged out
-        uint32_t adc_sum = 0 ;
-        for (int i = 0; i < 16; i++) {
-        adc_sum += adc_read() ;
-        }
-        uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
+        fix15 imm_prod;
+        uint32_t adc_filtered ;
 
         // now do the potentiometer function based on what the other thread said
         switch (pot_funct) {
-            fix15 imm_prod;
+            
             case INIT : // idk if we need this, can change later
             // does nothing 
+                adc_select_input(ADC_AUDIO_CHAN) ;
+                strcpy(pot_text_buffer, "") ;
             break ;
             case MOD_SCROLL_SPEED :
-                imm_prod = multfix15(int2fix15(adc_filtered), (MAX_SCROLL_SPEED)); // Don't need to convert MAX_BALLS
-                SCROLL_SPEED = fix2int15(divfix(imm_prod, 4096));
+                adc_filtered = adc_for_pot() ;
+                imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_SCROLL_SPEED)) ; // Don't need to convert MAX_BALLS
+                SCROLL_SPEED = fix2int15(divfix(imm_prod, int2fix15(4096)));
                 sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
             break ;
             case MOD_CENTER_FREQ :
-                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ));
+                adc_filtered = adc_for_pot() ;
+                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ)) ;
                 CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
                 // need to update tuning array based of the center frequency
             break ;
             case MOD_SCALING_FACTOR :
-                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR));
+                adc_filtered = adc_for_pot() ;
+                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR)) ;
                 SCALING_FACTOR = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
             break ;
         }
-    }
 
     // delay in accordance with frame rate
     spare_time = 30000 - (time_us_32() - begin_time) ;
 
     // yield for necessary amount of time
     PT_YIELD_usec(spare_time) ;
+
+    }
 
     // Indicate thread end
     PT_END(pt) ;
@@ -897,7 +917,7 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
     setTextSize(1) ;
 
     while(1) {
-        fillRect(10, 10, 600, 20, BLACK) ;
+        fillRect(0, 0, SPECTRO_WIDTH, SPECTRO_Y_START, BLACK) ;
 
         // write note to desired_note_buffer
         sprintf(desired_note_buffer, "Desired Tuning Note: %s", current_note);
@@ -926,8 +946,9 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
 
         // display potentiometer state
         setCursor(400, 10) ;
-        strcat(pot_state_buffer, pot_text_buffer) ;
-        writeString(pot_state_buffer) ;
+        char concat_pot_state[50] ;
+        sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
+        writeString(concat_pot_state) ;
 
         PT_YIELD_usec(30000) ;
     }
@@ -945,6 +966,7 @@ void core1_entry() {
     pt_add_thread(protothread_tune_debouncing) ;
     pt_add_thread(protothread_potFSM) ;
     pt_add_thread(protothread_tuneFSM) ;
+    pt_add_thread(protothread_pot_ADC) ;
     pt_add_thread(protothread_noncrit_vga) ;
     pt_schedule_start ;
 }
