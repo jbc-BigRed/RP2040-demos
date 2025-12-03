@@ -877,8 +877,9 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
           if (audio_enabled) {
             audio_enabled = 0 ;
             adc_run(false) ;
+            adc_fifo_drain() ; // drain the old fifo
             adc_select_input(ADC_POT_CHAN);
-            //adc_run(true) ;
+            adc_run(true) ;
           }
           // now do the potentiometer function based on what the other thread said
           adc_filtered = adc_for_pot() ;
@@ -890,7 +891,7 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
                 sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
             break ;
             case MOD_CENTER_FREQ :
-                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ)) ;
+                imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_CENTER_FREQ)) ;
                 CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
                 // need to update tuning array based of the center frequency
@@ -908,7 +909,9 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
           if (!audio_enabled) {
             // adc_run(false) ;
             adc_select_input(ADC_AUDIO_CHAN);
-            // adc_run(true) ;
+            adc_fifo_drain() ; // drain the old fifo
+            dma_channel_start(control_chan) ; // restart DMA idk why but ig 
+            adc_run(true) ;
             audio_enabled = 1 ;
           }
         }
