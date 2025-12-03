@@ -64,10 +64,35 @@
 
 #define ENCODER_PIN_A 2
 #define ENCODER_PIN_B 3
-#define BUTTON 4
+#define BUTTON_PIN 4
 
 static encoder_state enc_state;
-static int32_t encoder_value = 0;
+//static int32_t encoder_value = 0;
+
+
+volatile int SCROLL_SPEED = 10 ;
+volatile int CENTER_FREQ = 440 ;
+volatile float SCALING_FACTOR = 10.0 ;
+
+// state machine variables - potentiometer button pressing
+#define PIN_POT_BUTTON 5 // gpio 5 (pin 7)
+// states
+#define INIT 0 // potentiometer has no impact
+#define MOD_SCROLL_SPEED 1 // to adjust the scroll speed, increases rectangle size
+#define MOD_CENTER_FREQ 2 // to adjust the center frequency of tuning
+#define MOD_SCALING_FACTOR 3 // how much to multiply the values for the heat map (sensitivity)
+volatile unsigned int POT_STATE = INIT ; // initalize the state of this fsm
+volatile unsigned int P_CYCLE_STATE = INIT ;
+volatile int p_possible = 0 ;
+volatile int pot_funct = INIT ;
+
+#define NOT_PRESSED 0
+#define MAYBE_PRESSED 1
+#define PRESSED 2
+#define MAYBE_NOT_PRESSED 3
+
+static struct pt_sem pot_btn_pressed ;
+
 
 // Read A/B as a 2-bit value: bit0 = A, bit1 = B, 0..3
 static inline uint8_t read_encoder_terminals(void) {
@@ -80,10 +105,187 @@ static inline uint8_t read_encoder_terminals(void) {
     return (a | (b << 1)) & 0x3;
 }
 
+// Input button debouncing for potentiometer state management
+static PT_THREAD(protothread_POT_debouncing(struct pt *pt)) 
+{
+  PT_BEGIN(pt);
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+  
+  while(1) {
+    begin_time = time_us_32() ;
+
+    int p = gpio_get(BUTTON_PIN) ; // value of pot button press
+   
+    // implementing this debouncing algorithm with switch for clarity rather than if statements
+    switch (POT_STATE) {
+      case NOT_PRESSED :
+        if (p == 0) { // if the button is low (pressed)
+          POT_STATE = MAYBE_PRESSED ;
+          p_possible = p ; 
+        }
+        break ;
+      case MAYBE_PRESSED :
+        if (p == p_possible) {
+            POT_STATE = PRESSED ;
+            PT_SEM_SIGNAL(pt, &pot_btn_pressed) ; // send flag, potFSM thread will be activated by this
+            printf("Button pressed") ;
+        }
+        else { 
+            POT_STATE = NOT_PRESSED ;
+        }
+        break ;
+      case PRESSED :
+        if (p == 1) { // if the button is seen high again, maybe not pressed
+            POT_STATE = MAYBE_NOT_PRESSED ;
+            p_possible = p ;
+        }
+        break ;
+      case MAYBE_NOT_PRESSED :
+        if (p == p_possible) { //  possible is 1 right now, so if it is high send to not pressed
+          POT_STATE = NOT_PRESSED ;
+        }
+        else {
+          POT_STATE = PRESSED ;
+        }
+        break ;
+    }
+    
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+  PT_END(pt) ;
+} // thread for the debouncing
+
+// thread to manage state using debounced input
+static PT_THREAD(protothread_potFSM(struct pt *pt))
+{
+  PT_BEGIN(pt) ;
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+
+  while(1) {
+    // since this thread just cycles based on button presses, 
+    // can just wait until the flag is incremented, 
+    // and then restart STATE_1 in a loop without switch statements
+
+    PT_SEM_WAIT(pt, &pot_btn_pressed);
+
+    begin_time = time_us_32() ; // idk where to put this
+
+    P_CYCLE_STATE = (P_CYCLE_STATE + 1) % 4 ; // states 0 through 3, will loop when state reaches 3
+
+    switch (P_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
+      case INIT :
+        //strcpy(pot_state_buffer, "Standby") ;
+        pot_funct = INIT ;
+      break ;
+      case MOD_SCROLL_SPEED :
+        //strcpy(pot_state_buffer, "Adjusting scroll speed: ") ;
+        pot_funct = MOD_SCROLL_SPEED ;
+      break ;
+      case MOD_CENTER_FREQ :
+        //strcpy(pot_state_buffer, "Adjusting center frequency: ") ;
+        pot_funct = MOD_CENTER_FREQ ;
+      break ;
+      case MOD_SCALING_FACTOR :
+        //strcpy(pot_state_buffer, "Adjusting scaling factor: ") ;
+        pot_funct = MOD_SCALING_FACTOR ;
+      break ;
+    }
+
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+
+  PT_END(pt) ;
+} // thread for potentiometer FSM
+
+// Encoder protothread
+static PT_THREAD (protothread_encoder(struct pt *pt))
+{
+    PT_BEGIN(pt);
+    
+    // Variables for maintaining frame rate
+    static int spare_time;
+    static uint32_t begin_time;
+    static uint8_t output;
+    static int action;
+    
+    while(1) {
+        begin_time = time_us_32();
+        
+        // Read encoder terminals
+        output = read_encoder_terminals();
+        
+        // Update encoder state and get action
+        action = encoder_debounced_half_step_update(&enc_state, output);
+        
+        switch (action) {
+            case ENCODER_ACTION_TURN_CW:
+                switch (pot_funct) {
+                    case MOD_SCROLL_SPEED:
+                        SCROLL_SPEED++ ;
+                        break;
+                    case MOD_CENTER_FREQ:
+                        CENTER_FREQ++ ;
+                        break ;
+                    case MOD_SCALING_FACTOR:
+                        SCALING_FACTOR += 0.1 ;
+                        break ;
+                    case INIT :
+                        break ;
+                }
+                break;
+            case ENCODER_ACTION_TURN_CCW:
+                switch (pot_funct) {
+                    case MOD_SCROLL_SPEED:
+                        SCROLL_SPEED++ ;
+                        break;
+                    case MOD_CENTER_FREQ:
+                        CENTER_FREQ++ ;
+                        break ;
+                    case MOD_SCALING_FACTOR:
+                        SCALING_FACTOR += 0.1 ;
+                        break ;
+                    case INIT :
+                        break ;
+                }
+                break;
+            default:
+                break;
+        }
+        
+        // Print value if changed
+        printf("scroll speed: %d, center freq: %d, scaling factor: %f\n", SCROLL_SPEED, CENTER_FREQ, SCALING_FACTOR) ;
+        
+        // Polling rate: 1 kHz (1ms delay)
+        spare_time = 1000 - (time_us_32() - begin_time);
+        
+        // Yield for necessary amount of time
+        PT_YIELD_usec(spare_time);
+    }
+    
+    PT_END(pt);
+}
+
+
+
+
 int main() {
     stdio_init_all();
 
-    // Init pins
+    // Initialize encoder pins
     gpio_init(ENCODER_PIN_A);
     gpio_set_dir(ENCODER_PIN_A, GPIO_IN);
     gpio_pull_up(ENCODER_PIN_A);
@@ -92,31 +294,18 @@ int main() {
     gpio_set_dir(ENCODER_PIN_B, GPIO_IN);
     gpio_pull_up(ENCODER_PIN_B);
 
+    // Initialize button pin (if needed)
+    gpio_init(BUTTON_PIN);
+    gpio_set_dir(BUTTON_PIN, GPIO_IN);
+    gpio_pull_up(BUTTON_PIN);
+
     // Initialize encoder state with current terminal state
     uint8_t initial = read_encoder_terminals();
     encoder_debounced_full_step_init(&enc_state, initial);
 
-    int32_t last_value = encoder_value;
-
-    while (true) {
-        uint8_t term = read_encoder_terminals();
-        switch (encoder_debounced_full_step_update(&enc_state, term)) {
-            case ENCODER_ACTION_TURN_CW:
-                encoder_value++;
-                break;
-            case ENCODER_ACTION_TURN_CCW:
-                encoder_value--;
-                break;
-            default:
-                break;
-        }
-
-        if (encoder_value != last_value) {
-            last_value = encoder_value;
-            printf("Encoder value = %ld\n", (long)encoder_value);
-        }
-
-        // Polling rate: 1 kHz is usually enough; adjust as needed
-        sleep_ms(1);
-    }
+    // Then add the thread:
+    pt_add_thread(protothread_encoder);
+    pt_add_thread(protothread_POT_debouncing) ;
+    pt_add_thread(protothread_potFSM) ;
+    pt_schedule_start ;
 }
