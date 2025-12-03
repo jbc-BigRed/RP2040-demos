@@ -148,7 +148,7 @@ fix15 Sinewave[NUM_SAMPLES];
 // Hann window table for FFT calculation
 fix15 window[NUM_SAMPLES]; 
 
-volatile int audio_enabled = 1 ; // high when the fft will take in valid input from audio
+//volatile int audio_enabled = 1 ; // high when the fft will take in valid input from audio
 ////////////////////////////// fft end////////////////////////////////////
 
 // Pointer to address of start of sample buffer
@@ -213,10 +213,21 @@ static struct pt_sem pot_btn_pressed ;
 char tuning_state_buffer[17] ; // for vga
 volatile unsigned int TUNE_STATE = TUNE_DIS ;
 volatile unsigned int T_CYCLE_STATE = TUNE_DIS ;
-volatile int tune_funct = INIT ;
+volatile int tune_funct = TUNE_DIS ;
 //volatile int tune_btn_pressed = 0 ; // for initiating the pot cycle
 static struct pt_sem tune_btn_pressed ;
 volatile int t_possible = 0 ;
+
+// button for choosing between the line in and the mic
+#define PIN_INPUT_BUTTON 3 // gpio 3 (pin 5)
+#define MIC_INPUT 0 // initialize on the microphone
+#define LINE_INPUT 1 // enable input to the line-in
+char input_state_buffer[17] ; // for vga
+volatile unsigned int INPUT_STATE = MIC_INPUT ;
+volatile unsigned int I_CYCLE_STATE = MIC_INPUT ;
+volatile int input_funct = MIC_INPUT ;
+static struct pt_sem input_btn_pressed ;
+volatile int i_possible = 0 ;
 ///////////////////////// input state machine end /////////////////////////////////////////
 
 
@@ -272,16 +283,16 @@ static inline int freq_2_spectro(fix15 frequency) {
 }
 
 // allows the potentiometer ADC reads
-static inline uint32_t adc_for_pot() {
-  // average the ADC reads to make sure that the noise is averaged out
-  uint32_t adc_sum = 0 ;
-  for (int i = 0; i < 16; i++) {
-    adc_sum += adc_read() ;
-  }
-  uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
+// static inline uint32_t adc_for_pot() {
+//   // average the ADC reads to make sure that the noise is averaged out
+//   uint32_t adc_sum = 0 ;
+//   for (int i = 0; i < 16; i++) {
+//     adc_sum += adc_read() ;
+//   }
+//   uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
 
-  return adc_filtered ;
-}
+//   return adc_filtered ;
+// }
 
 
 // Peforms an in-place FFT. For more information about how this
@@ -380,7 +391,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     // Start the ADC channel
     dma_start_channel_mask((1u << sample_chan)) ;
     // Start the ADC
-    adc_run(true) ;
+    adc_run(true) ; // initialize with the adc running on audio
 
     // Declare some static variables
     // static int height ;             // for scaling display
@@ -411,9 +422,10 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         // get start time to facilitate clamping frame rate to 30 fps
         begin_time = time_us_32();
 
-        if (!audio_enabled) {
-          PT_YIELD_UNTIL(pt, audio_enabled) ;
-        }
+        PT_YIELD_UNTIL(pt, P_CYCLE_STATE == INIT) ;
+
+        // // Start the ADC, TRYING SOMETHNG TODO
+        // adc_run(true) ;
 
         // Wait for NUM_SAMPLES samples to be gathered
         // Measure wait time with timer. THIS IS BLOCKING
@@ -451,7 +463,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
             }
         }
         // for the actual tuning
-        // compute the dominant frequency (max magnitude)
+        // compute the dominant frequency (max magnitude), is compared in the non crit VGA field
         detected_freq = multfix15(int2fix15(max_fr_dex), float2fix15(Fs/NUM_SAMPLES)) ; // bin width = (Fs/NUM_SAMPLES)
 
         // Compute max frequency in Hz
@@ -757,6 +769,62 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
   PT_END(pt) ;
 } // thread for the debouncing
 
+// Input button debouncing for input state management
+static PT_THREAD(protothread_input_debouncing(struct pt *pt)) 
+{
+  PT_BEGIN(pt);
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+  
+  while(1) {
+    begin_time = time_us_32() ;
+
+    int i = gpio_get(PIN_INPUT_BUTTON) ; // value of tune button press
+
+    // implementing this debouncing algorithm with switch for clarity rather than if statements
+    switch (INPUT_STATE) {
+      case NOT_PRESSED :
+        if (i == 0) { // if the button is low (pressed)
+          INPUT_STATE = MAYBE_PRESSED ;
+          i_possible = i ; 
+        }
+        break ;
+      case MAYBE_PRESSED :
+        if (i == i_possible) {
+            INPUT_STATE = PRESSED ;
+            PT_SEM_SIGNAL(pt, &input_btn_pressed) ; // send flag, tuneFSM thread will be activated
+        }
+        else {
+            INPUT_STATE = NOT_PRESSED ;
+        }
+        break ;
+      case PRESSED :
+        if (i == 1) {
+            INPUT_STATE = MAYBE_NOT_PRESSED ;
+            i_possible = i ;
+        }
+        break ;
+      case MAYBE_NOT_PRESSED :
+        if (i == i_possible) { //  possible is 1 right now, so if it is high send to not pressed
+          INPUT_STATE = NOT_PRESSED ;
+        }
+        else {
+          INPUT_STATE = PRESSED ;
+        }
+        break ;
+    }
+    
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+  PT_END(pt) ;
+} // thread for the debouncing
+
 // thread to manage state using debounced input
 static PT_THREAD(protothread_potFSM(struct pt *pt))
 {
@@ -855,6 +923,53 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
   PT_END(pt) ;
 } // thread for tune FSM
 
+// thread to manage state using debounced input
+static PT_THREAD(protothread_inputFSM(struct pt *pt))
+{
+  PT_BEGIN(pt) ;
+
+  // Variables for maintaining frame rate
+  static int spare_time ;
+  static uint32_t begin_time ;
+
+  while(1) {
+    // since this thread just cycles based on button presses, 
+    // can just wait until the flag is incremented, 
+    // and then restart STATE_1 in a loop without switch statements
+
+    PT_SEM_WAIT(pt, &input_btn_pressed);
+
+    begin_time = time_us_32() ; // idk where to put this
+
+    I_CYCLE_STATE = (I_CYCLE_STATE + 1) % 2 ; // states 0 through 1, will loop when state reaches 1
+
+    switch (I_CYCLE_STATE) { // based on state display the currrent state and determine the input source
+      case MIC_INPUT :
+        strcpy(input_state_buffer, "Input: mic") ;
+        input_funct = MIC_INPUT ;
+        // reset cursor and black out screen
+        fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
+        time_x = SPECTRO_X_START;
+      break ;
+      case LINE_INPUT :
+        strcpy(input_state_buffer, "Input: line-in") ;
+        input_funct = LINE_INPUT ;
+        // reset cursor and black out screen
+        fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
+        time_x = SPECTRO_X_START;
+      break ;
+    }
+
+    // delay in accordance with frame rate
+    spare_time = 30000 - (time_us_32() - begin_time) ;
+
+    // yield for necessary amount of time
+    PT_YIELD_usec(spare_time) ;
+  }
+
+  PT_END(pt) ;
+} // thread for input FSM
+
 static PT_THREAD (protothread_pot_ADC(struct pt *pt))
 {
     // Indicate thread beginning
@@ -872,48 +987,59 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
         // Measure time at start of thread
         begin_time = time_us_32() ;
 
-        if (pot_funct != INIT) {
-          // if the audio is enabled and the pot is in one of the functions, then turn off audio
-          if (audio_enabled) {
-            audio_enabled = 0 ;
-            adc_run(false) ;
-            adc_fifo_drain() ; // drain the old fifo
-            adc_select_input(ADC_POT_CHAN);
-            adc_run(true) ;
-          }
+        if (pot_funct != INIT) { // just a fail safe to make sure that the pot only runs when the state is not init
+          // if the audio is enabled, stop it
+          adc_run(false) ; // halt the audio data collection
+          adc_fifo_drain() ; // drain the old fifo so that there isnt old audio data 
+          adc_select_input(ADC_POT_CHAN); // select the pot channel
+
           // now do the potentiometer function based on what the other thread said
-          adc_filtered = adc_for_pot() ;
+          //adc_filtered = adc_for_pot() ;
+          // average the ADC reads to make sure that the noise is averaged out
+          uint32_t adc_sum = 0 ;
+          for (int i = 0; i < 16; i++) {
+            adc_sum += adc_read() ;
+          }
+          uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
+
           switch (pot_funct) {
             case MOD_SCROLL_SPEED :
                 imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_SCROLL_SPEED)) ;
                 SCROLL_SPEED = fix2int15(divfix(imm_prod, int2fix15(4096)));
                 if (SCROLL_SPEED <= 0) SCROLL_SPEED = 1 ;
                 sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
-            break ;
+              break ;
             case MOD_CENTER_FREQ :
                 imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_CENTER_FREQ)) ;
-                CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
+                CENTER_FREQ = fix2int15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
                 // need to update tuning array based of the center frequency
-            break ;
+              break ;
             case MOD_SCALING_FACTOR :
                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR)) ;
                 SCALING_FACTOR = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
-            break ;
+              break ;
           }
         }
         // if the function is INIT
         else {
-          strcpy(pot_text_buffer, "") ;
-          if (!audio_enabled) {
-            // adc_run(false) ;
-            adc_select_input(ADC_AUDIO_CHAN);
-            adc_fifo_drain() ; // drain the old fifo
-            dma_channel_start(control_chan) ; // restart DMA idk why but ig 
-            adc_run(true) ;
-            audio_enabled = 1 ;
-          }
+          sprintf(pot_text_buffer, "%s", "") ;
+          // adc_run(false) ;
+          adc_select_input(ADC_AUDIO_CHAN);
+          adc_fifo_drain() ; // drain the old fifo
+          //dma_channel_start(control_chan) ; // restart DMA idk why but ig 
+          adc_run(true) ;
+          //audio_enabled = 1 ;
+
+          // if (!audio_enabled) {
+          //   // adc_run(false) ;
+          //   adc_select_input(ADC_AUDIO_CHAN);
+          //   adc_fifo_drain() ; // drain the old fifo
+          //   dma_channel_start(control_chan) ; // restart DMA idk why but ig 
+          //   //adc_run(true) ;
+          //   audio_enabled = 1 ;
+          // }
         }
 
       // delay in accordance with frame rate
@@ -984,8 +1110,10 @@ void core1_entry() {
     pt_add_thread(protothread_keypad_debounce) ;
     pt_add_thread(protothread_POT_debouncing) ;
     pt_add_thread(protothread_tune_debouncing) ;
+    //pt_add_thread(protothread_input_debouncing) ;
     pt_add_thread(protothread_potFSM) ;
     pt_add_thread(protothread_tuneFSM) ;
+    //pt_add_thread(protothread_inputFSM) ;
     pt_add_thread(protothread_noncrit_vga) ;
     pt_schedule_start ;
 }
@@ -1108,6 +1236,17 @@ int main() {
     gpio_init(PIN_TUNE_BUTTON) ;
     gpio_set_dir(PIN_TUNE_BUTTON, GPIO_IN); // set GPIO to input
     gpio_pull_up(PIN_TUNE_BUTTON) ; // drive the pin normally high, if button pressed will be low
+
+    // write to screen initial text
+    setTextColor(WHITE) ;
+    setTextSize(1) ;
+    // display the tuning disabled/enabled
+    setCursor(200, 10) ;
+    writeString("Tuning disabled") ;
+
+    // display potentiometer state
+    setCursor(400, 10) ;
+    writeString("Standby") ;
 
     // initialize semiphores
     PT_SEM_INIT(&pot_btn_pressed, 0);
