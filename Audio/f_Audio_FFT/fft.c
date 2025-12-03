@@ -280,8 +280,6 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
 }
 
 
-
-
 int main() {
     stdio_init_all();
 
