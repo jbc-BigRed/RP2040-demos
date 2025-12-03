@@ -147,6 +147,8 @@ fix15 fi[NUM_SAMPLES] ;
 fix15 Sinewave[NUM_SAMPLES]; 
 // Hann window table for FFT calculation
 fix15 window[NUM_SAMPLES]; 
+
+volatile int audio_enabled = 1 ; // high when the fft will take in valid input from audio
 ////////////////////////////// fft end////////////////////////////////////
 
 // Pointer to address of start of sample buffer
@@ -250,6 +252,7 @@ volatile fix15 detected_freq = 0; // current frequency being played
 
 ///////////////////////////////tuning stuff////////////////////////////////
 
+
 // converts the desired frequency into a y-value for the spectrogram
 // essentially normalizes the frequency graph to fit the VGA screen
 static inline int freq_2_spectro(fix15 frequency) {
@@ -270,8 +273,6 @@ static inline int freq_2_spectro(fix15 frequency) {
 
 // allows the potentiometer ADC reads
 static inline uint32_t adc_for_pot() {
-  adc_select_input(ADC_POT_CHAN);
-
   // average the ADC reads to make sure that the noise is averaged out
   uint32_t adc_sum = 0 ;
   for (int i = 0; i < 16; i++) {
@@ -409,6 +410,10 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     while(1) {
         // get start time to facilitate clamping frame rate to 30 fps
         begin_time = time_us_32();
+
+        if (!audio_enabled) {
+          PT_YIELD_UNTIL(pt, audio_enabled) ;
+        }
 
         // Wait for NUM_SAMPLES samples to be gathered
         // Measure wait time with timer. THIS IS BLOCKING
@@ -859,48 +864,60 @@ static PT_THREAD (protothread_pot_ADC(struct pt *pt))
     static int spare_time ;
     static uint32_t begin_time ;
 
+    // variables for the ADC reads
+    fix15 imm_prod;
+    uint32_t adc_filtered ;
+
     while(1) {
         // Measure time at start of thread
         begin_time = time_us_32() ;
 
-        fix15 imm_prod;
-        uint32_t adc_filtered ;
-
-        // now do the potentiometer function based on what the other thread said
-        switch (pot_funct) {
-            
-            case INIT : // idk if we need this, can change later
-            // does nothing 
-                adc_select_input(ADC_AUDIO_CHAN) ;
-                strcpy(pot_text_buffer, "") ;
-            break ;
+        if (pot_funct != INIT) {
+          // if the audio is enabled and the pot is in one of the functions, then turn off audio
+          if (audio_enabled) {
+            audio_enabled = 0 ;
+            adc_run(false) ;
+            adc_select_input(ADC_POT_CHAN);
+            //adc_run(true) ;
+          }
+          // now do the potentiometer function based on what the other thread said
+          adc_filtered = adc_for_pot() ;
+          switch (pot_funct) {
             case MOD_SCROLL_SPEED :
-                adc_filtered = adc_for_pot() ;
-                imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_SCROLL_SPEED)) ; // Don't need to convert MAX_BALLS
+                imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_SCROLL_SPEED)) ;
                 SCROLL_SPEED = fix2int15(divfix(imm_prod, int2fix15(4096)));
+                if (SCROLL_SPEED <= 0) SCROLL_SPEED = 1 ;
                 sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
             break ;
             case MOD_CENTER_FREQ :
-                adc_filtered = adc_for_pot() ;
                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ)) ;
                 CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
                 // need to update tuning array based of the center frequency
             break ;
             case MOD_SCALING_FACTOR :
-                adc_filtered = adc_for_pot() ;
                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR)) ;
                 SCALING_FACTOR = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
                 sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
             break ;
+          }
+        }
+        // if the function is INIT
+        else {
+          strcpy(pot_text_buffer, "") ;
+          if (!audio_enabled) {
+            // adc_run(false) ;
+            adc_select_input(ADC_AUDIO_CHAN);
+            // adc_run(true) ;
+            audio_enabled = 1 ;
+          }
         }
 
-    // delay in accordance with frame rate
-    spare_time = 30000 - (time_us_32() - begin_time) ;
+      // delay in accordance with frame rate
+      spare_time = 30000 - (time_us_32() - begin_time) ;
 
-    // yield for necessary amount of time
-    PT_YIELD_usec(spare_time) ;
-
+      // yield for necessary amount of time
+      PT_YIELD_usec(spare_time) ;
     }
 
     // Indicate thread end
@@ -933,7 +950,7 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         // if tuning is enabled, display the tuning bars
         //if(tuning_flag) { // TODO: make sure that the spectrogram restarts everytime so this works and the lines dont stay there
         
-        if(tuning_flag == 1) {
+        if (tuning_flag == 1) {
           if ((detected_freq <= ubound_freq) && (detected_freq >= lbound_freq)) {
             drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, GREEN) ; // upper
             drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, GREEN) ; // lower
@@ -966,7 +983,6 @@ void core1_entry() {
     pt_add_thread(protothread_tune_debouncing) ;
     pt_add_thread(protothread_potFSM) ;
     pt_add_thread(protothread_tuneFSM) ;
-    pt_add_thread(protothread_pot_ADC) ;
     pt_add_thread(protothread_noncrit_vga) ;
     pt_schedule_start ;
 }
@@ -1099,6 +1115,7 @@ int main() {
 
     // Add and schedule core 0 threads
     pt_add_thread(protothread_fft) ;
+    pt_add_thread(protothread_pot_ADC) ;
     pt_schedule_start ;
 
 }
