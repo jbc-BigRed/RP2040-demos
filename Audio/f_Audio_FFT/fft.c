@@ -58,6 +58,7 @@
 #include "hardware/pll.h"
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
+#include <rotaryencoder/debounced_encoder.h>
 
 // Define the LED pin
 #define LED     25
@@ -97,18 +98,28 @@ int control_chan ;
 
 //////////////////////////////// Audio ADC END ////////////////////////////// 
 
-//////////////////// Pot ADC Configuration //////////////////
+//////////////////// Pot and Rotary Configuration //////////////////
 // ADC Channel and pin
-#define ADC_POT_CHAN 1
-#define ADC_POT_PIN 27 // pin 32
+// #define ADC_POT_CHAN 1
+// #define ADC_POT_PIN 27 // pin 32
+
+#define ENCODER_PIN_A 2
+#define ENCODER_PIN_B 3
+#define BUTTON_PIN 4
+
+static encoder_state enc_state;
 
 const int MAX_SCROLL_SPEED = 10 ;
 const int MAX_CENTER_FREQ = 800 ;
 const float MAX_SCALING_FACTOR = 100.0 ;
 
+const int MIN_SCROLL_SPEED = 0 ;
+const int MIN_CENTER_FREQ = 0 ;
+const float MIN_SCALING_FACTOR = 0.0 ;
+
 volatile int SCROLL_SPEED = 8 ; // drawing speed
-volatile int CENTER_FREQ = 0 ; // tuning center frequency
-volatile float SCALING_FACTOR = 60.0; // sensitivity
+volatile int CENTER_FREQ = 440 ; // tuning center frequency
+volatile float SCALING_FACTOR = 6.0; // sensitivity
 
 char pot_text_buffer[10] ;
 //////////////////// Pot ADC END //////////////////
@@ -268,19 +279,30 @@ static inline int freq_2_spectro(fix15 frequency) {
   return SPECTRO_Y_START + y ;
 }
 
-// allows the potentiometer ADC reads
-static inline uint32_t adc_for_pot() {
-  adc_select_input(ADC_POT_CHAN);
-
-  // average the ADC reads to make sure that the noise is averaged out
-  uint32_t adc_sum = 0 ;
-  for (int i = 0; i < 16; i++) {
-    adc_sum += adc_read() ;
-  }
-  uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
-
-  return adc_filtered ;
+// Read A/B as a 2-bit value: bit0 = A, bit1 = B, 0..3
+static inline uint8_t read_encoder_terminals(void) {
+    uint8_t a = gpio_get(ENCODER_PIN_A);
+    uint8_t b = gpio_get(ENCODER_PIN_B);
+    // if you use pull-ups, signals are active-low:
+    // convert to logical "pressed = 1"
+    a = !a;
+    b = !b;
+    return (a | (b << 1)) & 0x3; // combines a and b into one packet: 0xba, matches the source files
 }
+
+// // allows the potentiometer ADC reads
+// static inline uint32_t adc_for_pot() {
+//   adc_select_input(ADC_POT_CHAN);
+
+//   // average the ADC reads to make sure that the noise is averaged out
+//   uint32_t adc_sum = 0 ;
+//   for (int i = 0; i < 16; i++) {
+//     adc_sum += adc_read() ;
+//   }
+//   uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
+
+//   return adc_filtered ;
+// }
 
 
 // Peforms an in-place FFT. For more information about how this
@@ -652,7 +674,7 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
   while(1) {
     begin_time = time_us_32() ;
 
-    int p = gpio_get(PIN_POT_BUTTON) ; // value of pot button press
+    int p = gpio_get(BUTTON_PIN) ; // value of pot button press
    
     // implementing this debouncing algorithm with switch for clarity rather than if statements
     switch (POT_STATE) {
@@ -666,6 +688,7 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
         if (p == p_possible) {
             POT_STATE = PRESSED ;
             PT_SEM_SIGNAL(pt, &pot_btn_pressed) ; // send flag, potFSM thread will be activated by this
+            printf("Button pressed") ;
         }
         else { 
             POT_STATE = NOT_PRESSED ;
@@ -850,62 +873,129 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
   PT_END(pt) ;
 } // thread for tune FSM
 
-static PT_THREAD (protothread_pot_ADC(struct pt *pt))
-{
-    // Indicate thread beginning
-    PT_BEGIN(pt) ;
+// static PT_THREAD (protothread_pot_ADC(struct pt *pt))
+// {
+//     // Indicate thread beginning
+//     PT_BEGIN(pt) ;
 
-    // Variables for maintaining frame rate
-    static int spare_time ;
-    static uint32_t begin_time ;
+//     // Variables for maintaining frame rate
+//     static int spare_time ;
+//     static uint32_t begin_time ;
 
-    while(1) {
-        // Measure time at start of thread
-        begin_time = time_us_32() ;
+//     while(1) {
+//         // Measure time at start of thread
+//         begin_time = time_us_32() ;
 
-        fix15 imm_prod;
-        uint32_t adc_filtered ;
+//         fix15 imm_prod;
+//         uint32_t adc_filtered ;
 
-        // now do the potentiometer function based on what the other thread said
-        switch (pot_funct) {
+//         // now do the potentiometer function based on what the other thread said
+//         switch (pot_funct) {
             
-            case INIT : // idk if we need this, can change later
-            // does nothing 
-                adc_select_input(ADC_AUDIO_CHAN) ;
-                strcpy(pot_text_buffer, "") ;
-            break ;
-            case MOD_SCROLL_SPEED :
-                adc_filtered = adc_for_pot() ;
-                imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_SCROLL_SPEED)) ; // Don't need to convert MAX_BALLS
-                SCROLL_SPEED = fix2int15(divfix(imm_prod, int2fix15(4096)));
-                sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
-            break ;
-            case MOD_CENTER_FREQ :
-                adc_filtered = adc_for_pot() ;
-                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ)) ;
-                CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
-                sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
-                // need to update tuning array based of the center frequency
-            break ;
-            case MOD_SCALING_FACTOR :
-                adc_filtered = adc_for_pot() ;
-                imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR)) ;
-                SCALING_FACTOR = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
-                sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
-            break ;
+//             case INIT : // idk if we need this, can change later
+//             // does nothing 
+//                 adc_select_input(ADC_AUDIO_CHAN) ;
+//                 strcpy(pot_text_buffer, "") ;
+//             break ;
+//             case MOD_SCROLL_SPEED :
+//                 adc_filtered = adc_for_pot() ;
+//                 imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_SCROLL_SPEED)) ; // Don't need to convert MAX_BALLS
+//                 SCROLL_SPEED = fix2int15(divfix(imm_prod, int2fix15(4096)));
+//                 sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
+//             break ;
+//             case MOD_CENTER_FREQ :
+//                 adc_filtered = adc_for_pot() ;
+//                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ)) ;
+//                 CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
+//                 sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
+//                 // need to update tuning array based of the center frequency
+//             break ;
+//             case MOD_SCALING_FACTOR :
+//                 adc_filtered = adc_for_pot() ;
+//                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR)) ;
+//                 SCALING_FACTOR = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
+//                 sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
+//             break ;
+//         }
+
+//     // delay in accordance with frame rate
+//     spare_time = 30000 - (time_us_32() - begin_time) ;
+
+//     // yield for necessary amount of time
+//     PT_YIELD_usec(spare_time) ;
+
+//     }
+
+//     // Indicate thread end
+//     PT_END(pt) ;
+// } // computes the trimming of the potentiometer
+// Encoder protothread
+static PT_THREAD (protothread_encoder(struct pt *pt))
+{
+    PT_BEGIN(pt);
+    
+    // Variables for maintaining frame rate
+    static int spare_time;
+    static uint32_t begin_time;
+    static uint8_t output;
+    static int action;
+    
+    while(1) {
+        begin_time = time_us_32();
+        
+        // Read encoder terminals
+        output = read_encoder_terminals();
+        
+        // Update encoder state and get action
+        action = encoder_debounced_half_step_update(&enc_state, output);
+        
+        switch (action) {
+            case ENCODER_ACTION_TURN_CW:
+                switch (pot_funct) {
+                    case MOD_SCROLL_SPEED:
+                        SCROLL_SPEED++ ;
+                        break;
+                    case MOD_CENTER_FREQ:
+                        CENTER_FREQ++ ;
+                        break ;
+                    case MOD_SCALING_FACTOR:
+                        SCALING_FACTOR += 0.1 ;
+                        break ;
+                    case INIT :
+                        break ;
+                }
+                break;
+            case ENCODER_ACTION_TURN_CCW:
+                switch (pot_funct) {
+                    case MOD_SCROLL_SPEED:
+                        SCROLL_SPEED++ ;
+                        break;
+                    case MOD_CENTER_FREQ:
+                        CENTER_FREQ++ ;
+                        break ;
+                    case MOD_SCALING_FACTOR:
+                        SCALING_FACTOR += 0.1 ;
+                        break ;
+                    case INIT :
+                        break ;
+                }
+                break;
+            default:
+                break;
         }
-
-    // delay in accordance with frame rate
-    spare_time = 30000 - (time_us_32() - begin_time) ;
-
-    // yield for necessary amount of time
-    PT_YIELD_usec(spare_time) ;
-
+        
+        // Print value if changed
+        printf("scroll speed: %d, center freq: %d, scaling factor: %f\n", SCROLL_SPEED, CENTER_FREQ, SCALING_FACTOR) ;
+        
+        // Polling rate: 1 kHz (1ms delay)
+        spare_time = 1000 - (time_us_32() - begin_time);
+        
+        // Yield for necessary amount of time
+        PT_YIELD_usec(spare_time);
     }
-
-    // Indicate thread end
-    PT_END(pt) ;
-} // computes the trimming of the potentiometer
+    
+    PT_END(pt);
+}
 
 // on core1
 static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
@@ -966,8 +1056,9 @@ void core1_entry() {
     pt_add_thread(protothread_tune_debouncing) ;
     pt_add_thread(protothread_potFSM) ;
     pt_add_thread(protothread_tuneFSM) ;
-    pt_add_thread(protothread_pot_ADC) ;
+    //pt_add_thread(protothread_pot_ADC) ;
     pt_add_thread(protothread_noncrit_vga) ;
+    pt_add_thread(protothread_encoder);
     pt_schedule_start ;
 }
 
@@ -1089,6 +1180,19 @@ int main() {
     gpio_init(PIN_TUNE_BUTTON) ;
     gpio_set_dir(PIN_TUNE_BUTTON, GPIO_IN); // set GPIO to input
     gpio_pull_up(PIN_TUNE_BUTTON) ; // drive the pin normally high, if button pressed will be low
+
+    // Initialize encoder pins
+    gpio_init(ENCODER_PIN_A);
+    gpio_set_dir(ENCODER_PIN_A, GPIO_IN);
+    gpio_pull_up(ENCODER_PIN_A);
+
+    gpio_init(ENCODER_PIN_B);
+    gpio_set_dir(ENCODER_PIN_B, GPIO_IN);
+    gpio_pull_up(ENCODER_PIN_B);
+
+    // Initialize encoder state with current terminal state
+    uint8_t initial = read_encoder_terminals();
+    encoder_debounced_full_step_init(&enc_state, initial);
 
     // initialize semiphores
     PT_SEM_INIT(&pot_btn_pressed, 0);

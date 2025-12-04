@@ -1,0 +1,30 @@
+language: cpp
+
+os: linux
+
+dist: jammy
+
+addons:
+  apt:
+    packages:
+      - cmake
+      - make
+
+git:
+  depth: false
+
+branches:
+  only:
+  - main
+
+compiler:
+  - gcc
+
+before_script:
+  - mkdir build
+  - cd build
+  - cmake ..
+
+script:
+  - make -j$(nproc)
+  - make test
