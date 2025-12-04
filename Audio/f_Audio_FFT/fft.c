@@ -34,6 +34,7 @@
  */
 
 // Include VGA graphics library
+#include "lib/include/rotaryencoder/common.h"
 #include "vga16_graphics_v2.h"
 // Include standard libraries
 #include <hardware/gpio.h>
@@ -608,7 +609,7 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
         else (i=-1) ;
 
         // // Print key to terminal
-        printf("\n%d", i) ;
+        //printf("\n%d", i) ;
 
         // implementing this debouncing algorithm with switch for clarity rather than if statements
         // KEYPAD_STATE = NOT_PRESSED upon initialization
@@ -626,7 +627,9 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
             strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
 
             curr_tuning_note_idx = i ; // set the i to the global index for the current note selected
-            curr_tuning_freq = note_frequencies[curr_tuning_note_idx] ; // current center frequency to tune to 
+
+            // current center frequency to tune to, accounts for shift in center_freq
+            curr_tuning_freq = note_frequencies[curr_tuning_note_idx] + (int2fix15(CENTER_FREQ) - note_frequencies[curr_tuning_note_idx]); 
 
             // reset cursor and black out screen
             fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
@@ -635,8 +638,8 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
             // calculate the y-values of the horizontal line for tuning
             ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
             lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
-            ubound_y = freq_2_spectro(ubound_freq) ;
-            lbound_y = freq_2_spectro(lbound_freq) ;
+            ubound_y = freq_2_spectro(ubound_freq) + 1 ;
+            lbound_y = freq_2_spectro(lbound_freq) - 1;
             }
             else {
             KEYPAD_STATE = NOT_PRESSED ;
@@ -688,7 +691,7 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
         if (p == p_possible) {
             POT_STATE = PRESSED ;
             PT_SEM_SIGNAL(pt, &pot_btn_pressed) ; // send flag, potFSM thread will be activated by this
-            printf("Button pressed") ;
+            //printf("Button pressed") ;
         }
         else { 
             POT_STATE = NOT_PRESSED ;
@@ -938,7 +941,7 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
     static int spare_time;
     static uint32_t begin_time;
     static uint8_t output;
-    static int action;
+    static encoder_action result;
     
     while(1) {
         begin_time = time_us_32();
@@ -947,19 +950,19 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
         output = read_encoder_terminals();
         
         // Update encoder state and get action
-        action = encoder_debounced_half_step_update(&enc_state, output);
+        result = encoder_debounced_half_step_update(&enc_state, output);
         
-        switch (action) {
+        switch (result) {
             case ENCODER_ACTION_TURN_CW:
                 switch (pot_funct) {
                     case MOD_SCROLL_SPEED:
-                        SCROLL_SPEED++ ;
+                        (SCROLL_SPEED < MAX_SCROLL_SPEED) ? SCROLL_SPEED++ : (SCROLL_SPEED = MAX_SCROLL_SPEED) :  ; // clamp to max value
                         break;
                     case MOD_CENTER_FREQ:
-                        CENTER_FREQ++ ;
+                        (CENTER_FREQ < MAX_CENTER_FREQ) ? CENTER_FREQ++ : (CENTER_FREQ = MAX_CENTER_FREQ) :  ;
                         break ;
                     case MOD_SCALING_FACTOR:
-                        SCALING_FACTOR += 0.1 ;
+                        (SCALING_FACTOR < MAX_SCALING_FACTOR) ? SCALING_FACTOR += 0.5 : (SCALING_FACTOR = MAX_SCALING_FACTOR) ;
                         break ;
                     case INIT :
                         break ;
@@ -968,13 +971,13 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
             case ENCODER_ACTION_TURN_CCW:
                 switch (pot_funct) {
                     case MOD_SCROLL_SPEED:
-                        SCROLL_SPEED++ ;
+                        (SCROLL_SPEED > MIN_SCROLL_SPEED) ? SCROLL_SPEED-- : (SCROLL_SPEED = MIN_SCROLL_SPEED) ; // clamp to min value
                         break;
                     case MOD_CENTER_FREQ:
-                        CENTER_FREQ++ ;
+                        (CENTER_FREQ > MIN_CENTER_FREQ) ? CENTER_FREQ-- : (CENTER_FREQ = MIN_CENTER_FREQ) ;
                         break ;
                     case MOD_SCALING_FACTOR:
-                        SCALING_FACTOR += 0.1 ;
+                        (SCALING_FACTOR > MIN_SCALING_FACTOR) ? SCALING_FACTOR -= 0.5 : (SCALING_FACTOR = MIN_SCALING_FACTOR);
                         break ;
                     case INIT :
                         break ;
@@ -985,12 +988,11 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
         }
         
         // Print value if changed
-        printf("scroll speed: %d, center freq: %d, scaling factor: %f\n", SCROLL_SPEED, CENTER_FREQ, SCALING_FACTOR) ;
+        //printf("scroll speed: %d, center freq: %d, scaling factor: %f\n", SCROLL_SPEED, CENTER_FREQ, SCALING_FACTOR) ;
         
-        // Polling rate: 1 kHz (1ms delay)
+        // Polling rate, 1 kHz (1ms delay)
         spare_time = 1000 - (time_us_32() - begin_time);
         
-        // Yield for necessary amount of time
         PT_YIELD_usec(spare_time);
     }
     
@@ -1082,7 +1084,7 @@ int main() {
     //////////////////////////////////////////////////////////////////////////////
     // Init GPIO for analogue use: hi-Z, no pulls, disable digital input buffer.
     adc_gpio_init(ADC_AUDIO_PIN); // for audio
-    adc_gpio_init(ADC_POT_PIN); // for the pot
+    //adc_gpio_init(ADC_POT_PIN); // for the pot
 
     // Initialize the ADC harware
     // (resets it, enables the clock, spins until the hardware is ready)
@@ -1192,7 +1194,7 @@ int main() {
 
     // Initialize encoder state with current terminal state
     uint8_t initial = read_encoder_terminals();
-    encoder_debounced_full_step_init(&enc_state, initial);
+    encoder_debounced_half_step_init(&enc_state, initial);
 
     // initialize semiphores
     PT_SEM_INIT(&pot_btn_pressed, 0);
