@@ -7,14 +7,19 @@
  * Core 0 computes and displays the FFT.
  *
  * HARDWARE CONNECTIONS
+ *  - GPIO 2  ---> ENCODER_PIN_A
+ *  - GPIO 3  ---> ENCODER_PIN_B
+ *  - GPIO 5  ---> Button input for rotary encoder 
  *  - GPIO 16 ---> VGA Hsync
  *  - GPIO 17 ---> VGA Vsync
  *  - GPIO 18 ---> 470 ohm resistor ---> VGA Green 
  *  - GPIO 19 ---> 330 ohm resistor ---> VGA Green
  *  - GPIO 20 ---> 330 ohm resistor ---> VGA Blue
  *  - GPIO 21 ---> 330 ohm resistor ---> VGA Red
+ *  - GPIO 22 ---> Tune button input (button 2)
  *  - RP2040 GND ---> VGA GND
  *  - GPIO 26 ---> Audio input [0-3.3V]
+ *  - GPIO VSYS ---> Encoder power [5V]
 
      KEYPAD CONNECTIONS
     - GPIO 9   -->  330 ohms  --> Pin 1 (button row 1)
@@ -34,7 +39,6 @@
  */
 
 // Include VGA graphics library
-#include "lib/include/rotaryencoder/common.h"
 #include "vga16_graphics_v2.h"
 // Include standard libraries
 #include <hardware/gpio.h>
@@ -59,7 +63,10 @@
 #include "hardware/pll.h"
 // Include protothreads
 #include "pt_cornell_rp2040_v1_4.h"
-#include <rotaryencoder/debounced_encoder.h>
+
+// include for rotary encoder
+#include "rotaryencoder/debounced_encoder.h"
+#include "rotaryencoder/common.h"
 
 // Define the LED pin
 #define LED     25
@@ -79,7 +86,9 @@ typedef signed int fix15 ;
 /////////////////////////// Audio ADC configuration ////////////////////////////////
 // ADC Channel and pin
 #define ADC_AUDIO_CHAN 0
-#define ADC_AUDIO_PIN 26 // pin 31
+#define ADC_AUDIO_PIN 26 // pin 31, this is the mic input
+#define ADC_LINEIN_CHAN 2
+#define ADC_LINEIN_PIN 28 // GPIO 28, pin 34, this is the line in input
 // Number of samples per FFT
 #define NUM_SAMPLES 1024
 // Number of samples per FFT, minus 1
@@ -104,9 +113,9 @@ int control_chan ;
 // #define ADC_POT_CHAN 1
 // #define ADC_POT_PIN 27 // pin 32
 
-#define ENCODER_PIN_A 2
-#define ENCODER_PIN_B 3
-#define BUTTON_PIN 4
+#define ENCODER_PIN_A 2 // GPIO 2, pin 4 CLK
+#define ENCODER_PIN_B 3 // GPIO 3, pin 5 DT
+// power at vsys, pin 39
 
 static encoder_state enc_state;
 
@@ -227,6 +236,10 @@ volatile int tune_funct = INIT ;
 //volatile int tune_btn_pressed = 0 ; // for initiating the pot cycle
 static struct pt_sem tune_btn_pressed ;
 volatile int t_possible = 0 ;
+
+// button for source select 
+//#define SOURCE_SELECT 4 // GPIO 4, pin 6
+
 ///////////////////////// input state machine end /////////////////////////////////////////
 
 
@@ -629,7 +642,8 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
             curr_tuning_note_idx = i ; // set the i to the global index for the current note selected
 
             // current center frequency to tune to, accounts for shift in center_freq
-            curr_tuning_freq = note_frequencies[curr_tuning_note_idx] + (int2fix15(CENTER_FREQ) - note_frequencies[curr_tuning_note_idx]); 
+            curr_tuning_freq = note_frequencies[curr_tuning_note_idx] + (int2fix15(440) - int2fix15(CENTER_FREQ)); 
+            // based on the fact that the initial tuning array is centered on 440?
 
             // reset cursor and black out screen
             fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
@@ -677,7 +691,7 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
   while(1) {
     begin_time = time_us_32() ;
 
-    int p = gpio_get(BUTTON_PIN) ; // value of pot button press
+    int p = gpio_get(PIN_POT_BUTTON) ; // value of pot button press
    
     // implementing this debouncing algorithm with switch for clarity rather than if statements
     switch (POT_STATE) {
@@ -956,10 +970,10 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
             case ENCODER_ACTION_TURN_CW:
                 switch (pot_funct) {
                     case MOD_SCROLL_SPEED:
-                        (SCROLL_SPEED < MAX_SCROLL_SPEED) ? SCROLL_SPEED++ : (SCROLL_SPEED = MAX_SCROLL_SPEED) :  ; // clamp to max value
+                        (SCROLL_SPEED < MAX_SCROLL_SPEED) ? SCROLL_SPEED++ : (SCROLL_SPEED = MAX_SCROLL_SPEED)  ; // clamp to max value
                         break;
                     case MOD_CENTER_FREQ:
-                        (CENTER_FREQ < MAX_CENTER_FREQ) ? CENTER_FREQ++ : (CENTER_FREQ = MAX_CENTER_FREQ) :  ;
+                        (CENTER_FREQ < MAX_CENTER_FREQ) ? CENTER_FREQ++ : (CENTER_FREQ = MAX_CENTER_FREQ)  ;
                         break ;
                     case MOD_SCALING_FACTOR:
                         (SCALING_FACTOR < MAX_SCALING_FACTOR) ? SCALING_FACTOR += 0.5 : (SCALING_FACTOR = MAX_SCALING_FACTOR) ;
@@ -1083,15 +1097,16 @@ int main() {
     // ============================== ADC CONFIGURATION ==========================
     //////////////////////////////////////////////////////////////////////////////
     // Init GPIO for analogue use: hi-Z, no pulls, disable digital input buffer.
-    adc_gpio_init(ADC_AUDIO_PIN); // for audio
-    //adc_gpio_init(ADC_POT_PIN); // for the pot
+    //adc_gpio_init(ADC_AUDIO_PIN); // for audio
+    adc_gpio_init(ADC_LINEIN_PIN); // for the linein
 
     // Initialize the ADC harware
     // (resets it, enables the clock, spins until the hardware is ready)
     adc_init() ;
 
     // Select analog mux input (0...3 are GPIO 26, 27, 28, 29; 4 is temp sensor)
-    adc_select_input(ADC_AUDIO_CHAN) ;
+    //adc_select_input(ADC_AUDIO_CHAN) ;
+    adc_select_input(ADC_LINEIN_CHAN) ;
 
     // Setup the FIFO
     adc_fifo_setup(
