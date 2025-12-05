@@ -65,8 +65,8 @@
 #include "pt_cornell_rp2040_v1_4.h"
 
 // include for rotary encoder
-#include "rotaryencoder/debounced_encoder.h"
-#include "rotaryencoder/common.h"
+#include <rotaryencoder/common.h>
+#include <rotaryencoder/debounced_encoder.h>
 
 // Define the LED pin
 #define LED     25
@@ -815,18 +815,22 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
     switch (P_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
       case INIT :
         strcpy(pot_state_buffer, "Standby") ;
+        strcpy(pot_text_buffer, "") ;
         pot_funct = INIT ;
       break ;
       case MOD_SCROLL_SPEED :
         strcpy(pot_state_buffer, "Adjusting scroll speed: ") ;
+        sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
         pot_funct = MOD_SCROLL_SPEED ;
       break ;
       case MOD_CENTER_FREQ :
         strcpy(pot_state_buffer, "Adjusting center frequency: ") ;
+        sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
         pot_funct = MOD_CENTER_FREQ ;
       break ;
       case MOD_SCALING_FACTOR :
         strcpy(pot_state_buffer, "Adjusting scaling factor: ") ;
+        sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
         pot_funct = MOD_SCALING_FACTOR ;
       break ;
     }
@@ -955,7 +959,7 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
     static int spare_time;
     static uint32_t begin_time;
     static uint8_t output;
-    static encoder_action result;
+    static enum encoder_action result;
     
     while(1) {
         begin_time = time_us_32();
@@ -971,14 +975,18 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
                 switch (pot_funct) {
                     case MOD_SCROLL_SPEED:
                         (SCROLL_SPEED < MAX_SCROLL_SPEED) ? SCROLL_SPEED++ : (SCROLL_SPEED = MAX_SCROLL_SPEED)  ; // clamp to max value
+                        sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
                         break;
                     case MOD_CENTER_FREQ:
                         (CENTER_FREQ < MAX_CENTER_FREQ) ? CENTER_FREQ++ : (CENTER_FREQ = MAX_CENTER_FREQ)  ;
+                        sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
                         break ;
                     case MOD_SCALING_FACTOR:
                         (SCALING_FACTOR < MAX_SCALING_FACTOR) ? SCALING_FACTOR += 0.5 : (SCALING_FACTOR = MAX_SCALING_FACTOR) ;
+                        sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
                         break ;
                     case INIT :
+                        //strcpy(pot_text_buffer, "") ;
                         break ;
                 }
                 break;
@@ -986,14 +994,18 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
                 switch (pot_funct) {
                     case MOD_SCROLL_SPEED:
                         (SCROLL_SPEED > MIN_SCROLL_SPEED) ? SCROLL_SPEED-- : (SCROLL_SPEED = MIN_SCROLL_SPEED) ; // clamp to min value
+                        sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
                         break;
                     case MOD_CENTER_FREQ:
                         (CENTER_FREQ > MIN_CENTER_FREQ) ? CENTER_FREQ-- : (CENTER_FREQ = MIN_CENTER_FREQ) ;
+                        sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
                         break ;
                     case MOD_SCALING_FACTOR:
                         (SCALING_FACTOR > MIN_SCALING_FACTOR) ? SCALING_FACTOR -= 0.5 : (SCALING_FACTOR = MIN_SCALING_FACTOR);
+                        sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
                         break ;
                     case INIT :
+                        
                         break ;
                 }
                 break;
@@ -1097,16 +1109,16 @@ int main() {
     // ============================== ADC CONFIGURATION ==========================
     //////////////////////////////////////////////////////////////////////////////
     // Init GPIO for analogue use: hi-Z, no pulls, disable digital input buffer.
-    //adc_gpio_init(ADC_AUDIO_PIN); // for audio
-    adc_gpio_init(ADC_LINEIN_PIN); // for the linein
+    adc_gpio_init(ADC_AUDIO_PIN); // for audio
+    //adc_gpio_init(ADC_LINEIN_PIN); // for the linein
 
     // Initialize the ADC harware
     // (resets it, enables the clock, spins until the hardware is ready)
     adc_init() ;
 
     // Select analog mux input (0...3 are GPIO 26, 27, 28, 29; 4 is temp sensor)
-    //adc_select_input(ADC_AUDIO_CHAN) ;
-    adc_select_input(ADC_LINEIN_CHAN) ;
+    adc_select_input(ADC_AUDIO_CHAN) ;
+    //adc_select_input(ADC_LINEIN_CHAN) ;
 
     // Setup the FIFO
     adc_fifo_setup(
