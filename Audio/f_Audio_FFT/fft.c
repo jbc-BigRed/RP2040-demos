@@ -636,18 +636,19 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
         case MAYBE_PRESSED :
             if (i == possible) {
             KEYPAD_STATE = PRESSED ;
+            // only alter stuff if in tuning mode
+            if (tuning_flag) {
+              strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
 
-            strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
+              curr_tuning_note_idx = i ; // set the i to the global index for the current note selected
 
-            curr_tuning_note_idx = i ; // set the i to the global index for the current note selected
-
-            // current center frequency to tune to, accounts for shift in center_freq
-            curr_tuning_freq = note_frequencies[curr_tuning_note_idx] + (int2fix15(440) - int2fix15(CENTER_FREQ)); 
-            // based on the fact that the initial tuning array is centered on 440?
-
-            // reset cursor and black out screen
-            fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
-            time_x = SPECTRO_X_START;
+              // current center frequency to tune to, accounts for shift in center_freq
+              curr_tuning_freq = note_frequencies[curr_tuning_note_idx] + (int2fix15(440) - int2fix15(CENTER_FREQ)); 
+              // based on the fact that the initial tuning array is centered on 440?
+              // reset cursor and black out screen
+                fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
+                time_x = SPECTRO_X_START;
+            }
 
             // calculate the y-values of the horizontal line for tuning
             ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
@@ -800,6 +801,9 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
   // Variables for maintaining frame rate
   static int spare_time ;
   static uint32_t begin_time ;
+  // get standby to show up immediately at runtime
+  strcpy(pot_state_buffer, "Standby");
+  strcpy(pot_text_buffer, "");
 
   while(1) {
     // since this thread just cycles based on button presses, 
@@ -819,17 +823,17 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
         pot_funct = INIT ;
       break ;
       case MOD_SCROLL_SPEED :
-        strcpy(pot_state_buffer, "Adjusting scroll speed: ") ;
+        strcpy(pot_state_buffer, "Speed:       ") ;
         sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
         pot_funct = MOD_SCROLL_SPEED ;
       break ;
       case MOD_CENTER_FREQ :
-        strcpy(pot_state_buffer, "Adjusting center frequency: ") ;
+        strcpy(pot_state_buffer, "Tuning Ref:  ") ;
         sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
         pot_funct = MOD_CENTER_FREQ ;
       break ;
       case MOD_SCALING_FACTOR :
-        strcpy(pot_state_buffer, "Adjusting scaling factor: ") ;
+        strcpy(pot_state_buffer, "Sensitivity: ") ;
         sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
         pot_funct = MOD_SCALING_FACTOR ;
       break ;
@@ -867,7 +871,8 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
 
     switch (T_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
       case TUNE_DIS :
-        strcpy(tuning_state_buffer, "Tuning disabled") ;
+        // old tuning disabled flag
+        // strcpy(tuning_state_buffer, "Tuning disabled") ;
         tune_funct = TUNE_DIS ;
         tuning_flag = 0 ; 
         // reset cursor and black out screen
@@ -875,7 +880,8 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
         time_x = SPECTRO_X_START;
       break ;
       case TUNE_EN :
-        strcpy(tuning_state_buffer, "Tuning enabled") ;
+        // old tuning enabled flag
+        // strcpy(tuning_state_buffer, "Tuning enabled") ;
         tune_funct = TUNE_EN ;
         tuning_flag = 1 ; // enable drawing for tuning lines
         // reset cursor and black out screen
@@ -1035,14 +1041,22 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
     setTextSize(1) ;
 
     while(1) {
-        fillRect(0, 0, SPECTRO_WIDTH, SPECTRO_Y_START, BLACK) ;
+        // fillRect(0, 0, SPECTRO_WIDTH, SPECTRO_Y_START, BLACK) ;
 
         // write note to desired_note_buffer
-        sprintf(desired_note_buffer, "Desired Tuning Note: %s", current_note);
+        sprintf(desired_note_buffer, "Tuning To: %s", current_note);
 
-        // display the note
-        setCursor(10, 10) ;
-        writeString(desired_note_buffer) ;
+        // display the note and ref freq if in tuning mode
+        if (tuning_flag) {
+          setCursor(10, 10) ;
+          writeString(desired_note_buffer) ;
+        }
+        
+        // show tuning disabled
+        else {
+          setCursor(10, 10) ;
+          writeString("Tuning Disabled") ; 
+        }
 
         // display the tuning disabled/enabled
         setCursor(200, 10) ;
@@ -1063,7 +1077,7 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         }
 
         // display potentiometer state
-        setCursor(400, 10) ;
+        setCursor(520, 10) ;
         char concat_pot_state[50] ;
         sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
         writeString(concat_pot_state) ;
