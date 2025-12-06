@@ -204,8 +204,17 @@ char desired_note_buffer[30] = "Desired Tuning Note: "; // for outputting note o
 char current_note[6] = "None" ;
 /////////////////////////////////// keypad end ///////////////////////////
 
+// state management for display///////////////////////////////////////////
 
-//////////////////////// Constants for input mode state machine ///////////////////////////
+volatile short int change_tuning_state = 0;
+volatile short int change_tuning_note = 0;
+volatile short int tuning_text_drawn = 0;
+
+volatile short int knob_mode_change = 0;
+volatile short int knob_value_change = 0;
+
+
+/////////////////// Constants for input mode state machine ///////////////
 // debouncing inputs
 //volatile unsigned int D_STATE = NOT_PRESSED ; // state variable for debouncer
 
@@ -594,6 +603,7 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
     static uint32_t keypad ;
     // maps to active key for retrigger purposes
     static int active_key = -1 ;
+    static short int prev_state;
 
     while(1) {
         // Below code until else (i=-1) ; is checking what the button pressed is, then after will implement state machine
@@ -620,9 +630,7 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
         }
         // Otherwise, indicate invalid/non-pressed buttons
         else (i=-1) ;
-
-        // // Print key to terminal
-        //printf("\n%d", i) ;
+        prev_state = KEYPAD_STATE;
 
         // implementing this debouncing algorithm with switch for clarity rather than if statements
         // KEYPAD_STATE = NOT_PRESSED upon initialization
@@ -673,6 +681,12 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
             KEYPAD_STATE = NOT_PRESSED ;
             }
             break ;
+        if (KEYPAD_STATE != prev_state) {
+          change_tuning_note = 1;
+        }
+        else {
+          change_tuning_note = 0;
+        }
         }
         PT_YIELD(pt) ;
     }
@@ -688,12 +702,13 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
   // Variables for maintaining frame rate
   static int spare_time ;
   static uint32_t begin_time ;
+  static short int prev_state = 0 ;
   
   while(1) {
     begin_time = time_us_32() ;
 
     int p = gpio_get(PIN_POT_BUTTON) ; // value of pot button press
-   
+    prev_state = POT_STATE;
     // implementing this debouncing algorithm with switch for clarity rather than if statements
     switch (POT_STATE) {
       case NOT_PRESSED :
@@ -727,6 +742,12 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
         }
         break ;
     }
+    if (prev_state != POT_STATE) {
+      knob_mode_change = 1;
+    }
+    else {
+      knob_mode_change = 0;
+    }
     
     // delay in accordance with frame rate
     spare_time = 30000 - (time_us_32() - begin_time) ;
@@ -745,6 +766,7 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
   // Variables for maintaining frame rate
   static int spare_time ;
   static uint32_t begin_time ;
+  unsigned int prev_state = NOT_PRESSED;
   
   while(1) {
     begin_time = time_us_32() ;
@@ -756,25 +778,30 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
       case NOT_PRESSED :
         if (t == 0) { // if the button is low (pressed)
           TUNE_STATE = MAYBE_PRESSED ;
+          prev_state = NOT_PRESSED;
           t_possible = t ; 
         }
         break ;
       case MAYBE_PRESSED :
         if (t == t_possible) {
             TUNE_STATE = PRESSED ;
+            prev_state = MAYBE_PRESSED;
             PT_SEM_SIGNAL(pt, &tune_btn_pressed) ; // send flag, potFSM thread will be activated
         }
         else {
-            TUNE_STATE = NOT_PRESSED ;
+          prev_state = TUNE_STATE;
+          TUNE_STATE = NOT_PRESSED ;
         }
         break ;
       case PRESSED :
         if (t == 1) {
             TUNE_STATE = MAYBE_NOT_PRESSED ;
+            prev_state = PRESSED;
             t_possible = t ;
         }
         break ;
       case MAYBE_NOT_PRESSED :
+        prev_state = MAYBE_NOT_PRESSED;
         if (t == t_possible) { //  possible is 1 right now, so if it is high send to not pressed
           TUNE_STATE = NOT_PRESSED ;
         }
@@ -782,6 +809,12 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
           TUNE_STATE = PRESSED ;
         }
         break ;
+    }
+    if (prev_state != TUNE_STATE) {
+      change_tuning_state = 1;
+    }
+    else {
+      change_tuning_state = 0;
     }
     
     // delay in accordance with frame rate
@@ -900,62 +933,6 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
   PT_END(pt) ;
 } // thread for tune FSM
 
-// static PT_THREAD (protothread_pot_ADC(struct pt *pt))
-// {
-//     // Indicate thread beginning
-//     PT_BEGIN(pt) ;
-
-//     // Variables for maintaining frame rate
-//     static int spare_time ;
-//     static uint32_t begin_time ;
-
-//     while(1) {
-//         // Measure time at start of thread
-//         begin_time = time_us_32() ;
-
-//         fix15 imm_prod;
-//         uint32_t adc_filtered ;
-
-//         // now do the potentiometer function based on what the other thread said
-//         switch (pot_funct) {
-            
-//             case INIT : // idk if we need this, can change later
-//             // does nothing 
-//                 adc_select_input(ADC_AUDIO_CHAN) ;
-//                 strcpy(pot_text_buffer, "") ;
-//             break ;
-//             case MOD_SCROLL_SPEED :
-//                 adc_filtered = adc_for_pot() ;
-//                 imm_prod = multfix15(int2fix15(adc_filtered), int2fix15(MAX_SCROLL_SPEED)) ; // Don't need to convert MAX_BALLS
-//                 SCROLL_SPEED = fix2int15(divfix(imm_prod, int2fix15(4096)));
-//                 sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
-//             break ;
-//             case MOD_CENTER_FREQ :
-//                 adc_filtered = adc_for_pot() ;
-//                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_CENTER_FREQ)) ;
-//                 CENTER_FREQ = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
-//                 sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
-//                 // need to update tuning array based of the center frequency
-//             break ;
-//             case MOD_SCALING_FACTOR :
-//                 adc_filtered = adc_for_pot() ;
-//                 imm_prod = multfix15(int2fix15(adc_filtered), float2fix15(MAX_SCALING_FACTOR)) ;
-//                 SCALING_FACTOR = fix2float15(divfix(imm_prod, int2fix15(4096))); //4096 is the scaling factor for adc
-//                 sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
-//             break ;
-//         }
-
-//     // delay in accordance with frame rate
-//     spare_time = 30000 - (time_us_32() - begin_time) ;
-
-//     // yield for necessary amount of time
-//     PT_YIELD_usec(spare_time) ;
-
-//     }
-
-//     // Indicate thread end
-//     PT_END(pt) ;
-// } // computes the trimming of the potentiometer
 // Encoder protothread
 static PT_THREAD (protothread_encoder(struct pt *pt))
 {
@@ -975,6 +952,10 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
         
         // Update encoder state and get action
         result = encoder_debounced_half_step_update(&enc_state, output);
+
+        static int prev_speed =  8;
+        static int prev_center = 440;
+        static float prev_scale = 6.0;
         
         switch (result) {
             case ENCODER_ACTION_TURN_CW:
@@ -1018,6 +999,12 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
             default:
                 break;
         }
+        if ((prev_center != CENTER_FREQ) || (prev_speed != SCROLL_SPEED) || (prev_scale != SCALING_FACTOR)) {
+          knob_value_change = 1;
+        }
+        else {
+          knob_value_change = 0;
+        }
         
         // Print value if changed
         //printf("scroll speed: %d, center freq: %d, scaling factor: %f\n", SCROLL_SPEED, CENTER_FREQ, SCALING_FACTOR) ;
@@ -1039,13 +1026,22 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
 
     setTextColor(WHITE) ;
     setTextSize(1) ;
+    char concat_pot_state[50] ;
+    setCursor(520, 10);
+    sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
+    // make sure standby shows up immediately
+    writeString(concat_pot_state) ;
 
     while(1) {
         // fillRect(0, 0, SPECTRO_WIDTH, SPECTRO_Y_START, BLACK) ;
 
         // write note to desired_note_buffer
         sprintf(desired_note_buffer, "Tuning To: %s", current_note);
-
+        tuning_text_drawn = change_tuning_state || change_tuning_note ;
+        // if tuning state changing, blank text region
+        if(tuning_text_drawn) {
+          fillRect(10, 10, 100, 10, BLACK);
+        }
         // display the note and ref freq if in tuning mode
         if (tuning_flag) {
           setCursor(10, 10) ;
@@ -1057,13 +1053,6 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
           setCursor(10, 10) ;
           writeString("Tuning Disabled") ; 
         }
-
-        // display the tuning disabled/enabled
-        setCursor(200, 10) ;
-        writeString(tuning_state_buffer) ;
-
-        // if tuning is enabled, display the tuning bars
-        //if(tuning_flag) { // TODO: make sure that the spectrogram restarts everytime so this works and the lines dont stay there
         
         if(tuning_flag == 1) {
           if ((detected_freq <= ubound_freq) && (detected_freq >= lbound_freq)) {
@@ -1077,10 +1066,13 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         }
 
         // display potentiometer state
-        setCursor(520, 10) ;
-        char concat_pot_state[50] ;
-        sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
-        writeString(concat_pot_state) ;
+        // if changing state, then blank with rect
+        if (knob_mode_change || knob_value_change) {
+          setCursor(520, 10) ;
+          fillRect(520, 10, 120, 10, BLACK);
+          sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
+          writeString(concat_pot_state) ;
+        }
 
         PT_YIELD_usec(30000) ;
     }
