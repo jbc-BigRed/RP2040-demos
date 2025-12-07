@@ -777,7 +777,7 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
             TUNE_STATE = PRESSED ;
             prev_state = MAYBE_PRESSED;
             PT_SEM_SIGNAL(pt, &tune_btn_pressed) ; // send flag, potFSM thread will be activated
-            PT_YIELD_usec(20000);
+            PT_YIELD_usec(200000);
             begin_time = time_us_32();
         }
         else {
@@ -852,7 +852,7 @@ static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
                     }
                     // Request the hardware switch on Core 0 w/flag
                     request_source_switch = 1; 
-                    PT_YIELD_usec(20000);
+                    PT_YIELD_usec(200000);
                     begin_time = time_us_32();
                 }
                 else {
