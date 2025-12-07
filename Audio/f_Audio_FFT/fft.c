@@ -122,14 +122,17 @@ static encoder_state enc_state;
 const int MAX_SCROLL_SPEED = 10 ;
 const int MAX_CENTER_FREQ = 800 ;
 const float MAX_SCALING_FACTOR = 100.0 ;
+const int MAX_OCTAVE = 6 ;
 
 const int MIN_SCROLL_SPEED = 0 ;
 const int MIN_CENTER_FREQ = 0 ;
 const float MIN_SCALING_FACTOR = 0.0 ;
+const int MIN_OCTAVE = 0 ;
 
 volatile int SCROLL_SPEED = 8 ; // drawing speed
 volatile int CENTER_FREQ = 440 ; // tuning center frequency
 volatile float SCALING_FACTOR = 6.0; // sensitivity
+volatile int OCTAVE = 4 ; // current octave
 
 char pot_text_buffer[10] ;
 //////////////////// Pot ADC END //////////////////
@@ -201,7 +204,8 @@ volatile int possible = 0 ;
 volatile unsigned int KEYPAD_STATE = NOT_PRESSED ;
 char notes[12][6] = {"A#/Bb", "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "B"} ; // mapping to the keycodes (index i)
 char desired_note_buffer[30] = "Desired Tuning Note: "; // for outputting note on the VGA display
-char current_note[6] = "None" ;
+char desired_octave_buffer[3] = "4" ; // current octave
+char current_note[6] = "C" ;
 /////////////////////////////////// keypad end ///////////////////////////
 
 // state management for display///////////////////////////////////////////
@@ -224,6 +228,8 @@ volatile short int knob_value_change = 0;
 #define MOD_SCROLL_SPEED 1 // to adjust the scroll speed, increases rectangle size
 #define MOD_CENTER_FREQ 2 // to adjust the center frequency of tuning
 #define MOD_SCALING_FACTOR 3 // how much to multiply the values for the heat map (sensitivity)
+#define MOD_OCTAVE 4 // scrolling through the octaves
+
 volatile unsigned int POT_STATE = INIT ; // initalize the state of this fsm
 volatile unsigned int P_CYCLE_STATE = INIT ;
 char pot_state_buffer[40] ; // buffer for snprintf for the current state
@@ -273,10 +279,11 @@ fix15 note_frequencies[12] = {float2fix15(466.16), // A#/Bb
                               } ; // based on octave 4 tuning, matches index of notes array
 
 volatile int curr_tuning_note_idx = -1 ; // make it so no note is chosen initially
-volatile fix15 curr_tuning_freq = 0 ;
+volatile fix15 curr_tuning_freq =  float2fix15(261.63) ;
 
 // the value to multiply the center frequency by to get the bounds to draw the horizontal tuning bars
-static fix15 cents_padding = float2fix15(1.0116194403) ; // based on 20 cents, 2^(cents/1200)
+//static fix15 cents_padding = float2fix15(1.0116194403) ; // based on 20 cents, 2^(cents/1200)
+static fix15 cents_padding = float2fix15(1.023373892) ; // based on 40 cents, 2^(cents/1200)
 //fix15 n_cents_padding = float2fix15(-1.0116194403) ; // negative bound
 // actual variables for the bounds of the lines
 volatile fix15 lbound_y = 0 ; 
@@ -440,7 +447,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
     static int freq_bin_index;
     static int scaled_mag;
     static float float_magnitude;
-
+    
     while(1) {
         // get start time to facilitate clamping frame rate to 30 fps
         begin_time = time_us_32();
@@ -523,13 +530,8 @@ static PT_THREAD (protothread_fft(struct pt *pt))
             float_magnitude = fix2float15(fr[freq_bin_index]);
             // scale magnitude 
             scaled_mag = (int)(float_magnitude * SCALING_FACTOR);
-            //int scaled_mag = fix2int15(multfix15(fr[i], int2fix15(36)));
             scaled_mag = max(0, min(255, scaled_mag));
 
-            scaled_mag = fix2int15(multfix15(fr[freq_bin_index], int2fix15(30)));
-
-            if (scaled_mag < 0) scaled_mag = 0;
-            if (scaled_mag > 255) scaled_mag = 255;
             // TODO: IF NEEDED, TUNE MAGS USING THIS INFO: https://vanhunteradams.com/Spectrogram/Spectrogram.html
             // map scaled mag to color
             // these thresholds need to be tuned
@@ -854,6 +856,9 @@ static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
                     request_source_switch = 1; 
                     PT_YIELD_usec(200000);
                     begin_time = time_us_32();
+                    // BLACK OUT SCREEN AND RESET CURSOR
+                    fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK);
+                    time_x = SPECTRO_X_START;
                 }
                 else {
                     SOURCE_STATE = NOT_PRESSED ;
@@ -903,7 +908,7 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
 
     begin_time = time_us_32() ; // idk where to put this
 
-    P_CYCLE_STATE = (P_CYCLE_STATE + 1) % 4 ; // states 0 through 3, will loop when state reaches 3
+    P_CYCLE_STATE = (P_CYCLE_STATE + 1) % 5 ; // states 0 through 4, will loop when state reaches 4
 
     switch (P_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
       case INIT :
@@ -925,6 +930,11 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
         strcpy(pot_state_buffer, "Sensitivity: ") ;
         sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
         pot_funct = MOD_SCALING_FACTOR ;
+      break ;
+      case MOD_OCTAVE :
+        strcpy(pot_state_buffer, "Changing Octave") ;
+        strcpy(pot_text_buffer, "") ;
+        pot_funct = MOD_OCTAVE ;
       break ;
     }
 
@@ -1005,25 +1015,28 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
         // Update encoder state and get action
         result = encoder_debounced_full_step_update(&enc_state, output);
 
-        static int prev_speed =  8;
-        static int prev_center = 440;
-        static float prev_scale = 6.0;
+        static int prev_speed =  8 ;
+        static int prev_center = 440 ;
+        static float prev_scale = 6.0 ;
         
         switch (result) {
             case ENCODER_ACTION_TURN_CW:
                 switch (pot_funct) {
                     case MOD_SCROLL_SPEED:
-                        (SCROLL_SPEED < MAX_SCROLL_SPEED) ? SCROLL_SPEED++ : (SCROLL_SPEED = MAX_SCROLL_SPEED)  ; // clamp to max value
-                        sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
-                        break;
+                      (SCROLL_SPEED < MAX_SCROLL_SPEED) ? SCROLL_SPEED++ : (SCROLL_SPEED = MAX_SCROLL_SPEED)  ; // clamp to max value
+                      sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
+                      break;
                     case MOD_CENTER_FREQ:
-                        (CENTER_FREQ < MAX_CENTER_FREQ) ? CENTER_FREQ++ : (CENTER_FREQ = MAX_CENTER_FREQ)  ;
-                        sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
-                        break ;
+                      (CENTER_FREQ < MAX_CENTER_FREQ) ? CENTER_FREQ++ : (CENTER_FREQ = MAX_CENTER_FREQ)  ;
+                      sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
+                      break ;
                     case MOD_SCALING_FACTOR:
-                        (SCALING_FACTOR < MAX_SCALING_FACTOR) ? SCALING_FACTOR += 0.5 : (SCALING_FACTOR = MAX_SCALING_FACTOR) ;
-                        sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
-                        break ;
+                      (SCALING_FACTOR < MAX_SCALING_FACTOR) ? SCALING_FACTOR += 0.5 : (SCALING_FACTOR = MAX_SCALING_FACTOR) ;
+                      sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
+                      break ;
+                    case MOD_OCTAVE :
+                      (OCTAVE < MAX_OCTAVE) ? OCTAVE += 1 : (OCTAVE = MAX_OCTAVE) ;
+                    break ;
                     case INIT :
                         //strcpy(pot_text_buffer, "") ;
                         break ;
@@ -1032,17 +1045,20 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
             case ENCODER_ACTION_TURN_CCW:
                 switch (pot_funct) {
                     case MOD_SCROLL_SPEED:
-                        (SCROLL_SPEED > MIN_SCROLL_SPEED) ? SCROLL_SPEED-- : (SCROLL_SPEED = MIN_SCROLL_SPEED) ; // clamp to min value
-                        sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
-                        break;
+                      (SCROLL_SPEED > MIN_SCROLL_SPEED) ? SCROLL_SPEED-- : (SCROLL_SPEED = MIN_SCROLL_SPEED) ; // clamp to min value
+                      sprintf(pot_text_buffer, "%d", SCROLL_SPEED) ;
+                      break;
                     case MOD_CENTER_FREQ:
-                        (CENTER_FREQ > MIN_CENTER_FREQ) ? CENTER_FREQ-- : (CENTER_FREQ = MIN_CENTER_FREQ) ;
-                        sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
-                        break ;
+                      (CENTER_FREQ > MIN_CENTER_FREQ) ? CENTER_FREQ-- : (CENTER_FREQ = MIN_CENTER_FREQ) ;
+                      sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
+                      break ;
                     case MOD_SCALING_FACTOR:
-                        (SCALING_FACTOR > MIN_SCALING_FACTOR) ? SCALING_FACTOR -= 0.5 : (SCALING_FACTOR = MIN_SCALING_FACTOR);
-                        sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
-                        break ;
+                      (SCALING_FACTOR > MIN_SCALING_FACTOR) ? SCALING_FACTOR -= 0.5 : (SCALING_FACTOR = MIN_SCALING_FACTOR);
+                      sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
+                      break ;
+                    case MOD_OCTAVE :
+                      (OCTAVE > MIN_OCTAVE) ? OCTAVE -= 1 : (OCTAVE = MIN_OCTAVE) ;
+                      break ;
                     case INIT :
                         
                         break ;
@@ -1080,7 +1096,8 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
     static short int prev_p_state = -1;
     static short int prev_speed = -1;
     static short int prev_center = -1;
-    static short int prev_scale = -1.0;
+    static float prev_scale = -1.0;
+    static short int prev_octave = -1 ;
 
     setTextColor(WHITE) ;
     setTextSize(1) ;
@@ -1098,13 +1115,15 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
         // TUNING LOGIC ///////////////////////////////////////////
         // write note to desired_note_buffer
         sprintf(desired_note_buffer, "Tuning To: %s", current_note);
-        if (tuning_flag != prev_tuning_flag || curr_tuning_note_idx != prev_note_idx) {
+        if (tuning_flag != prev_tuning_flag || curr_tuning_note_idx != prev_note_idx || OCTAVE != prev_octave) {
           fillRect(10, 10, 150, 10, BLACK);
 
           setCursor(10, 10);
           if (tuning_flag) {
             sprintf(desired_note_buffer, "Tuning to: %s", current_note);
+            sprintf(desired_octave_buffer, "%d", OCTAVE);
             writeString(desired_note_buffer);
+            writeString(desired_octave_buffer) ;
           }
           else {
             writeString("Tuning Disabled");
@@ -1112,6 +1131,7 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
 
           prev_tuning_flag = tuning_flag;
           prev_note_idx = curr_tuning_note_idx;
+          prev_octave = OCTAVE ;
         }
         
         
