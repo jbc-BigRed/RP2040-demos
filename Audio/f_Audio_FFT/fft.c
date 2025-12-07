@@ -711,6 +711,8 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
             POT_STATE = PRESSED ;
             PT_SEM_SIGNAL(pt, &pot_btn_pressed) ; // send flag, potFSM thread will be activated by this
             //printf("Button pressed") ;
+            PT_YIELD_usec(20000);
+            begin_time = time_us_32();
         }
         else { 
             POT_STATE = NOT_PRESSED ;
@@ -775,7 +777,7 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
             TUNE_STATE = PRESSED ;
             prev_state = MAYBE_PRESSED;
             PT_SEM_SIGNAL(pt, &tune_btn_pressed) ; // send flag, potFSM thread will be activated
-            PT_YIELD_usec(200000);
+            PT_YIELD_usec(20000);
             begin_time = time_us_32();
         }
         else {
@@ -842,7 +844,6 @@ static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
             case MAYBE_PRESSED :
                 if (s_reading == s_possible) {
                     SOURCE_STATE = PRESSED ;
-                    
                     // toggle source var
                     if (current_source == SOURCE_MIC) {
                         current_source = SOURCE_LINE;
@@ -851,6 +852,8 @@ static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
                     }
                     // Request the hardware switch on Core 0 w/flag
                     request_source_switch = 1; 
+                    PT_YIELD_usec(20000);
+                    begin_time = time_us_32();
                 }
                 else {
                     SOURCE_STATE = NOT_PRESSED ;
