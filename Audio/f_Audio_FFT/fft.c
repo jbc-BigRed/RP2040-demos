@@ -213,7 +213,6 @@ volatile short int tuning_text_drawn = 0;
 volatile short int knob_mode_change = 0;
 volatile short int knob_value_change = 0;
 
-
 /////////////////// Constants for input mode state machine ///////////////
 // debouncing inputs
 //volatile unsigned int D_STATE = NOT_PRESSED ; // state variable for debouncer
@@ -247,7 +246,13 @@ static struct pt_sem tune_btn_pressed ;
 volatile int t_possible = 0 ;
 
 // button for source select 
-//#define SOURCE_SELECT 4 // GPIO 4, pin 6
+#define SOURCE_SELECT 4 // GPIO 4, pin 6
+
+// STATE TRACKING FOR AUDIO SOURCE
+#define SOURCE_MIC 0
+#define SOURCE_LINE 1
+volatile int current_source = SOURCE_MIC;
+volatile int request_source_switch; // flag to tell core 0 to switch 
 
 ///////////////////////// input state machine end /////////////////////////////////////////
 
@@ -312,21 +317,6 @@ static inline uint8_t read_encoder_terminals(void) {
     b = !b;
     return (a | (b << 1)) & 0x3; // combines a and b into one packet: 0xba, matches the source files
 }
-
-// // allows the potentiometer ADC reads
-// static inline uint32_t adc_for_pot() {
-//   adc_select_input(ADC_POT_CHAN);
-
-//   // average the ADC reads to make sure that the noise is averaged out
-//   uint32_t adc_sum = 0 ;
-//   for (int i = 0; i < 16; i++) {
-//     adc_sum += adc_read() ;
-//   }
-//   uint32_t adc_filtered = adc_sum >> 4 ; // divide by 16 by shifting 4 bits
-
-//   return adc_filtered ;
-// }
-
 
 // Peforms an in-place FFT. For more information about how this
 // algorithm works, please see https://vanhunteradams.com/FFT/FFT.html
@@ -459,6 +449,26 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         // Measure wait time with timer. THIS IS BLOCKING
         dma_channel_wait_for_finish_blocking(sample_chan);
 
+        // check if a source switch was requested by pressing source button
+        if (request_source_switch) {
+          // pause adc to prevent fifo write while switching
+          adc_run(false);
+
+          // empty the fifo
+          adc_fifo_drain();
+          
+          // switch mux
+          if (current_source == SOURCE_LINE) {
+            adc_select_input(ADC_LINEIN_CHAN);
+          }
+          else {
+            adc_select_input(ADC_AUDIO_CHAN);
+          }
+          // clear flag, start adc
+          request_source_switch = 0;
+          adc_run(true);
+        }
+
         // Copy/window elements into a fixed-point array
         for (i=0; i<NUM_SAMPLES; i++) {
             fr[i] = multfix15(int2fix15((int)sample_array[i]), window[i]) ;
@@ -494,28 +504,7 @@ static PT_THREAD (protothread_fft(struct pt *pt))
         // compute the dominant frequency (max magnitude)
         detected_freq = multfix15(int2fix15(max_fr_dex), float2fix15(Fs/NUM_SAMPLES)) ; // bin width = (Fs/NUM_SAMPLES)
 
-        // Compute max frequency in Hz
-        //max_freqency = max_fr_dex * (Fs/NUM_SAMPLES) ;
-
-        ////////////////////   Freq plot   ///////////////////////////////
-        // Display on VGA
-        // fillRect(250, 20, 176, 30, BLACK); // red box
-        // sprintf(freqtext, "%d", (int)max_freqency) ;
-        // setCursor(250, 20) ;
-        // setTextSize(2) ;
-        // writeString(freqtext) ;
-
-        // // Update the FFT display
-        // for (int i=5; i<(NUM_SAMPLES>>1); i++) {
-        //     drawVLine(59+i, 50, 429, BLACK);
-        //     height = fix2int15(multfix15(fr[i], int2fix15(36))) ;
-        //     drawVLine(59+i, 479-height, height, WHITE);
-        // }
-        ////////////////////   Freq plot end  ////////////////////////////
-
         /////////////////// spectrogram //////////////////////////////////
-
-        // TODO: OPTIMIZE THE CONSTANTS OUT OF THE LOOP AND PUT THEM IN #DEFS OR ELSEWHERE IN THREAD BEFORE LOOP
 
         // draw new vertical time slice
         for (i = 0; i < SPECTRO_HEIGHT; i++) {
@@ -524,7 +513,6 @@ static PT_THREAD (protothread_fft(struct pt *pt))
 
             if (freq_bin_index < 0) freq_bin_index = 0;
 
-            // TODO: CHECK IF THIS IS NECESSARY
             // skip first 5 bins (low-freq noise)
             if (i < 5) {
                 fillRect(time_x, SPECTRO_Y_START + i, SCROLL_SPEED, 1, BLACK);
@@ -573,17 +561,13 @@ static PT_THREAD (protothread_fft(struct pt *pt))
             time_x = SPECTRO_X_START;
         }
 
-        // Clear next column over to make a scrolling effect and differentiate between timesteps post wraparound
-        // drawVLine(time_x, SPECTRO_Y_START, SPECTRO_HEIGHT, BLACK);
-
         /////////////////// spectrogram end //////////////////////////////
 
         // spare_time = FRAME_RATE_30 - (time_us_32() - begin_time);
         // // check if framerate is met 
         // if (spare_time < 0) gpio_put(LED, 1);
         // else gpio_put(LED, 0);
-
-        // PT_YIELD_usec(spare_time);
+        // PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
         PT_YIELD(pt);
         // don't exit this while loop
     }
@@ -753,7 +737,7 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
     spare_time = 30000 - (time_us_32() - begin_time) ;
 
     // yield for necessary amount of time
-    PT_YIELD_usec(spare_time) ;
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
   }
   PT_END(pt) ;
 } // thread for the debouncing
@@ -821,10 +805,78 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
     spare_time = 30000 - (time_us_32() - begin_time) ;
 
     // yield for necessary amount of time
-    PT_YIELD_usec(spare_time) ;
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
   }
   PT_END(pt) ;
 } // thread for the debouncing
+
+static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
+{
+  PT_BEGIN(pt);
+  static int spare_time;
+  static uint32_t begin_time;
+  static short int prev_state = 1;
+  static short int stable_state = 1;
+  static short int s;
+  static short int s_possible = 0;
+  static short int SOURCE_STATE = NOT_PRESSED;
+
+  while(1) {
+    begin_time = time_us_32();
+
+    s = gpio_get(SOURCE_SELECT);
+
+    // implementing this debouncing algorithm with switch for clarity rather than if statements
+    switch (SOURCE_STATE) {
+      case NOT_PRESSED :
+        if (s == 0) { // if the button is low (pressed)
+          SOURCE_STATE = MAYBE_PRESSED ;
+        }
+        break ;
+      case MAYBE_PRESSED :
+        if (s == s_possible) {
+            SOURCE_STATE = PRESSED ;
+            if (current_source == SOURCE_MIC) {
+              current_source = SOURCE_LINE;
+            }
+            else {
+              current_source = SOURCE_MIC;
+            }
+            request_source_switch = 1;
+        }
+        else {
+          SOURCE_STATE = NOT_PRESSED ;
+        }
+        break ;
+      case PRESSED :
+        if (s == 1) {
+            SOURCE_STATE = MAYBE_NOT_PRESSED ;
+            s_possible = s ;
+        }
+        break ;
+      case MAYBE_NOT_PRESSED :
+        if (s == s_possible) { //  possible is 1 right now, so if it is high send to not pressed
+          SOURCE_STATE = NOT_PRESSED ;
+        }
+        else {
+          SOURCE_STATE = PRESSED ;
+        }
+        break ;
+    }
+    if (prev_state != SOURCE_STATE) {
+      request_source_switch = 1;
+    }
+    else {
+      request_source_switch = 0;
+    }
+    prev_state = SOURCE_STATE;
+
+    // loop timing
+    spare_time = 3000 - (time_us_32() - begin_time);
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
+  }
+  PT_END(pt);
+}
 
 // thread to manage state using debounced input
 static PT_THREAD(protothread_potFSM(struct pt *pt))
@@ -876,7 +928,7 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
     spare_time = 30000 - (time_us_32() - begin_time) ;
 
     // yield for necessary amount of time
-    PT_YIELD_usec(spare_time) ;
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
   }
 
   PT_END(pt) ;
@@ -927,7 +979,7 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
     spare_time = 30000 - (time_us_32() - begin_time) ;
 
     // yield for necessary amount of time
-    PT_YIELD_usec(spare_time) ;
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
   }
 
   PT_END(pt) ;
@@ -1012,7 +1064,7 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
         // Polling rate, 1 kHz (1ms delay)
         spare_time = 1000 - (time_us_32() - begin_time);
         
-        PT_YIELD_usec(spare_time);
+        PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
     }
     
     PT_END(pt);
@@ -1024,16 +1076,21 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
     // Indicate thread beginning
     PT_BEGIN(pt) ;
 
+    static int spare_time;
+    static uint32_t begin_time;
+
     setTextColor(WHITE) ;
     setTextSize(1) ;
     char concat_pot_state[50] ;
+    setCursor(300, 10);
+    writeString("Input: Mic    ");
     setCursor(520, 10);
     sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
     // make sure standby shows up immediately
     writeString(concat_pot_state) ;
 
     while(1) {
-        // fillRect(0, 0, SPECTRO_WIDTH, SPECTRO_Y_START, BLACK) ;
+        begin_time = time_us_32();
 
         // write note to desired_note_buffer
         sprintf(desired_note_buffer, "Tuning To: %s", current_note);
@@ -1065,6 +1122,18 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
           }      
         }
 
+        // show source indicator
+        if (request_source_switch) {
+          fillRect(300, 10, 100, 10, BLACK);
+          setCursor(300, 10);
+          if (current_source == SOURCE_MIC) {
+            writeString("Input: Mic    ");
+          }
+          else {
+            writeString("Input: Line-in");
+          }
+        }
+
         // display potentiometer state
         // if changing state, then blank with rect
         if (knob_mode_change || knob_value_change) {
@@ -1073,8 +1142,9 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
           sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
           writeString(concat_pot_state) ;
         }
-
-        PT_YIELD_usec(30000) ;
+      
+      spare_time = 30000 - (time_us_32() - begin_time);
+      PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
     }
     
     // Indicate thread end
@@ -1093,6 +1163,7 @@ void core1_entry() {
     //pt_add_thread(protothread_pot_ADC) ;
     pt_add_thread(protothread_noncrit_vga) ;
     pt_add_thread(protothread_encoder);
+    pt_add_thread(protothread_source_select_debouncing);
     pt_schedule_start ;
 }
 
@@ -1116,7 +1187,7 @@ int main() {
     //////////////////////////////////////////////////////////////////////////////
     // Init GPIO for analogue use: hi-Z, no pulls, disable digital input buffer.
     adc_gpio_init(ADC_AUDIO_PIN); // for audio
-    //adc_gpio_init(ADC_LINEIN_PIN); // for the linein
+    adc_gpio_init(ADC_LINEIN_PIN); // for the linein
 
     // Initialize the ADC harware
     // (resets it, enables the clock, spins until the hardware is ready)
@@ -1124,7 +1195,6 @@ int main() {
 
     // Select analog mux input (0...3 are GPIO 26, 27, 28, 29; 4 is temp sensor)
     adc_select_input(ADC_AUDIO_CHAN) ;
-    //adc_select_input(ADC_LINEIN_CHAN) ;
 
     // Setup the FIFO
     adc_fifo_setup(
@@ -1215,6 +1285,10 @@ int main() {
     gpio_init(PIN_TUNE_BUTTON) ;
     gpio_set_dir(PIN_TUNE_BUTTON, GPIO_IN); // set GPIO to input
     gpio_pull_up(PIN_TUNE_BUTTON) ; // drive the pin normally high, if button pressed will be low
+
+    gpio_init(SOURCE_SELECT);
+    gpio_set_dir(SOURCE_SELECT, GPIO_IN);
+    gpio_pull_up(SOURCE_SELECT);
 
     // Initialize encoder pins
     gpio_init(ENCODER_PIN_A);
