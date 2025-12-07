@@ -588,8 +588,11 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
     // maps to active key for retrigger purposes
     static int active_key = -1 ;
     static short int prev_state;
+    static int spare_time;
+    static uint32_t begin_time;
 
     while(1) {
+      begin_time = time_us_32();
         // Below code until else (i=-1) ; is checking what the button pressed is, then after will implement state machine
         // Scan the keypad!
         for (i=0; i<KEYROWS; i++) {
@@ -672,7 +675,9 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
           change_tuning_note = 0;
         }
         }
-        PT_YIELD(pt) ;
+      // Loop timing
+      spare_time = 30000 - (time_us_32() - begin_time);
+      PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
     }
     // Indicate thread end
     PT_END(pt) ;
@@ -733,11 +738,10 @@ static PT_THREAD(protothread_POT_debouncing(struct pt *pt))
       knob_mode_change = 0;
     }
     
-    // delay in accordance with frame rate
-    spare_time = 30000 - (time_us_32() - begin_time) ;
-
-    // yield for necessary amount of time
-    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
+    // // delay in accordance with frame rate
+    // Loop timing
+    spare_time = 30000 - (time_us_32() - begin_time);
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
   }
   PT_END(pt) ;
 } // thread for the debouncing
@@ -771,6 +775,8 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
             TUNE_STATE = PRESSED ;
             prev_state = MAYBE_PRESSED;
             PT_SEM_SIGNAL(pt, &tune_btn_pressed) ; // send flag, potFSM thread will be activated
+            PT_YIELD_usec(200000);
+            begin_time = time_us_32();
         }
         else {
           prev_state = TUNE_STATE;
@@ -801,81 +807,76 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
       change_tuning_state = 0;
     }
     
-    // delay in accordance with frame rate
-    spare_time = 30000 - (time_us_32() - begin_time) ;
-
-    // yield for necessary amount of time
-    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
+    // // delay in accordance with frame rate
+    // Loop timing
+    spare_time = 30000 - (time_us_32() - begin_time);
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
   }
   PT_END(pt) ;
 } // thread for the debouncing
 
 static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
 {
-  PT_BEGIN(pt);
-  static int spare_time;
-  static uint32_t begin_time;
-  static short int prev_state = 1;
-  static short int stable_state = 1;
-  static short int s;
-  static short int s_possible = 0;
-  static short int SOURCE_STATE = NOT_PRESSED;
+    PT_BEGIN(pt);
+    static int spare_time;
+    static uint32_t begin_time;
+    
+    static short int prev_s_state = NOT_PRESSED;
+    static short int s_possible = 0;
+    static short int SOURCE_STATE = NOT_PRESSED;
+    static int s_reading;
 
-  while(1) {
-    begin_time = time_us_32();
+    while(1) {
+        begin_time = time_us_32();
 
-    s = gpio_get(SOURCE_SELECT);
+        s_reading = gpio_get(SOURCE_SELECT);
 
-    // implementing this debouncing algorithm with switch for clarity rather than if statements
-    switch (SOURCE_STATE) {
-      case NOT_PRESSED :
-        if (s == 0) { // if the button is low (pressed)
-          SOURCE_STATE = MAYBE_PRESSED ;
+        // FSM
+        switch (SOURCE_STATE) {
+            case NOT_PRESSED :
+                if (s_reading == 0) { // Button pressed
+                    SOURCE_STATE = MAYBE_PRESSED ;
+                    s_possible = s_reading ; 
+                }
+                break ;
+            case MAYBE_PRESSED :
+                if (s_reading == s_possible) {
+                    SOURCE_STATE = PRESSED ;
+                    
+                    // toggle source var
+                    if (current_source == SOURCE_MIC) {
+                        current_source = SOURCE_LINE;
+                    } else {
+                        current_source = SOURCE_MIC;
+                    }
+                    // Request the hardware switch on Core 0 w/flag
+                    request_source_switch = 1; 
+                }
+                else {
+                    SOURCE_STATE = NOT_PRESSED ;
+                }
+                break ;
+            case PRESSED :
+                if (s_reading == 1) { // release
+                    SOURCE_STATE = MAYBE_NOT_PRESSED ;
+                    s_possible = s_reading ;
+                }
+                break ;
+            case MAYBE_NOT_PRESSED :
+                if (s_reading == s_possible) { 
+                    SOURCE_STATE = NOT_PRESSED ;
+                }
+                else {
+                    SOURCE_STATE = PRESSED ;
+                }
+                break ;
         }
-        break ;
-      case MAYBE_PRESSED :
-        if (s == s_possible) {
-            SOURCE_STATE = PRESSED ;
-            if (current_source == SOURCE_MIC) {
-              current_source = SOURCE_LINE;
-            }
-            else {
-              current_source = SOURCE_MIC;
-            }
-            request_source_switch = 1;
-        }
-        else {
-          SOURCE_STATE = NOT_PRESSED ;
-        }
-        break ;
-      case PRESSED :
-        if (s == 1) {
-            SOURCE_STATE = MAYBE_NOT_PRESSED ;
-            s_possible = s ;
-        }
-        break ;
-      case MAYBE_NOT_PRESSED :
-        if (s == s_possible) { //  possible is 1 right now, so if it is high send to not pressed
-          SOURCE_STATE = NOT_PRESSED ;
-        }
-        else {
-          SOURCE_STATE = PRESSED ;
-        }
-        break ;
+        
+        // Loop timing
+        spare_time = 30000 - (time_us_32() - begin_time);
+        PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
     }
-    if (prev_state != SOURCE_STATE) {
-      request_source_switch = 1;
-    }
-    else {
-      request_source_switch = 0;
-    }
-    prev_state = SOURCE_STATE;
-
-    // loop timing
-    spare_time = 3000 - (time_us_32() - begin_time);
-    PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
-  }
-  PT_END(pt);
+    PT_END(pt);
 }
 
 // thread to manage state using debounced input
@@ -924,11 +925,9 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
       break ;
     }
 
-    // delay in accordance with frame rate
-    spare_time = 30000 - (time_us_32() - begin_time) ;
-
-    // yield for necessary amount of time
-    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
+    // Loop timing
+    spare_time = 30000 - (time_us_32() - begin_time);
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
   }
 
   PT_END(pt) ;
@@ -975,11 +974,9 @@ static PT_THREAD(protothread_tuneFSM(struct pt *pt))
       break ;
     }
 
-    // delay in accordance with frame rate
-    spare_time = 30000 - (time_us_32() - begin_time) ;
-
-    // yield for necessary amount of time
-    PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
+    // Loop timing
+    spare_time = 30000 - (time_us_32() - begin_time);
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
   }
 
   PT_END(pt) ;
@@ -1003,7 +1000,7 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
         output = read_encoder_terminals();
         
         // Update encoder state and get action
-        result = encoder_debounced_half_step_update(&enc_state, output);
+        result = encoder_debounced_full_step_update(&enc_state, output);
 
         static int prev_speed =  8;
         static int prev_center = 440;
@@ -1058,13 +1055,9 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
           knob_value_change = 0;
         }
         
-        // Print value if changed
-        //printf("scroll speed: %d, center freq: %d, scaling factor: %f\n", SCROLL_SPEED, CENTER_FREQ, SCALING_FACTOR) ;
-        
-        // Polling rate, 1 kHz (1ms delay)
-        spare_time = 1000 - (time_us_32() - begin_time);
-        
-        PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
+    // Loop timing
+    spare_time = 30000 - (time_us_32() - begin_time);
+    PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
     }
     
     PT_END(pt);
@@ -1078,6 +1071,13 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
 
     static int spare_time;
     static uint32_t begin_time;
+    static short int prev_source_drawn = -1;
+    static short int prev_tuning_flag = -1;
+    static short int prev_note_idx = -1;
+    static short int prev_p_state = -1;
+    static short int prev_speed = -1;
+    static short int prev_center = -1;
+    static short int prev_scale = -1.0;
 
     setTextColor(WHITE) ;
     setTextSize(1) ;
@@ -1092,24 +1092,25 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
     while(1) {
         begin_time = time_us_32();
 
+        // TUNING LOGIC ///////////////////////////////////////////
         // write note to desired_note_buffer
         sprintf(desired_note_buffer, "Tuning To: %s", current_note);
-        tuning_text_drawn = change_tuning_state || change_tuning_note ;
-        // if tuning state changing, blank text region
-        if(tuning_text_drawn) {
-          fillRect(10, 10, 100, 10, BLACK);
-        }
-        // display the note and ref freq if in tuning mode
-        if (tuning_flag) {
-          setCursor(10, 10) ;
-          writeString(desired_note_buffer) ;
+        if (tuning_flag != prev_tuning_flag || curr_tuning_note_idx != prev_note_idx) {
+          fillRect(10, 10, 150, 10, BLACK);
+
+          setCursor(10, 10);
+          if (tuning_flag) {
+            sprintf(desired_note_buffer, "Tuning to: %s", current_note);
+            writeString(desired_note_buffer);
+          }
+          else {
+            writeString("Tuning Disabled");
+          }
+
+          prev_tuning_flag = tuning_flag;
+          prev_note_idx = curr_tuning_note_idx;
         }
         
-        // show tuning disabled
-        else {
-          setCursor(10, 10) ;
-          writeString("Tuning Disabled") ; 
-        }
         
         if(tuning_flag == 1) {
           if ((detected_freq <= ubound_freq) && (detected_freq >= lbound_freq)) {
@@ -1121,9 +1122,11 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
             drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, RED) ; // lower
           }      
         }
+        ///////// TUNING LOGIC END ///////////////////////////////////////
 
+        // SOURCE ///////////////////////////////////////////////////
         // show source indicator
-        if (request_source_switch) {
+        if (current_source != prev_source_drawn) {
           fillRect(300, 10, 100, 10, BLACK);
           setCursor(300, 10);
           if (current_source == SOURCE_MIC) {
@@ -1132,19 +1135,35 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
           else {
             writeString("Input: Line-in");
           }
+          prev_source_drawn = current_source;
         }
+        // SOURCE END /////////////////////////////////////////////////
 
+        ////////// POT /////////////////////////////////////////////
+        if (P_CYCLE_STATE != prev_p_state || 
+            SCROLL_SPEED != prev_speed ||
+            CENTER_FREQ != prev_center ||
+            SCALING_FACTOR != prev_scale) {
+
+          // clear area
+          setCursor(520, 10);
+          fillRect(520, 10, 120, 10, BLACK);
+          // MAKE STRING ON CURRENT STATE
+          sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
+          writeString(concat_pot_state);
+          // update trackers
+          prev_p_state = P_CYCLE_STATE;
+          prev_speed = SCROLL_SPEED;
+          prev_center = CENTER_FREQ;
+          prev_scale = SCALING_FACTOR;
+        }
         // display potentiometer state
         // if changing state, then blank with rect
-        if (knob_mode_change || knob_value_change) {
-          setCursor(520, 10) ;
-          fillRect(520, 10, 120, 10, BLACK);
-          sprintf(concat_pot_state, "%s%s", pot_state_buffer, pot_text_buffer) ;
-          writeString(concat_pot_state) ;
-        }
+        ///////// POT END /////////////////////////////////////////////
       
+      // Loop timing
       spare_time = 30000 - (time_us_32() - begin_time);
-      PT_YIELD_usec(spare_time > 0 ? spare_time : 0) ;
+      PT_YIELD_usec(spare_time > 0 ? spare_time : 0);
     }
     
     // Indicate thread end
