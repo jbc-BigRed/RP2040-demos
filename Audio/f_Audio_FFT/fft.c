@@ -278,7 +278,7 @@ fix15 note_frequencies[12] = {float2fix15(466.16), // A#/Bb
                               float2fix15(493.88) // B
                               } ; // based on octave 4 tuning, matches index of notes array
 
-volatile int curr_tuning_note_idx = -1 ; // make it so no note is chosen initially
+volatile int curr_tuning_note_idx = 1 ; // make it so C4 is chosen initially, will only show if tuning is enabled
 volatile fix15 curr_tuning_freq =  float2fix15(261.63) ;
 //volatile fix15 base_note ;
 
@@ -291,6 +291,20 @@ volatile fix15 lbound_y = 0 ;
 volatile fix15 ubound_y = 0 ;
 volatile fix15 lbound_freq = 0 ;
 volatile fix15 ubound_freq = 0 ;
+
+// int visual_paddings[12] = {2, // octave 0
+//                           float2fix15(261.63), // octave 0
+//                           float2fix15(277.18), // octave 0
+//                           float2fix15(293.66), // octave 0
+//                           float2fix15(311.13), // octave 0
+//                           float2fix15(329.63), // octave 0
+//                           float2fix15(349.23), // octave 0
+//                           float2fix15(369.99), // octave 0
+//                           float2fix15(392), // octave 0
+//                           float2fix15(415.30), // octave 0
+//                           float2fix15(440), // octave 0
+//                           float2fix15(493.88) // octave 0
+//                           } ; // paddings for the VGA tuning, ensures that at higher frequencies 
 
 volatile int tuning_flag = 0 ; // if tuning is enabled, stay high. else low (will ensure that the bars are only redrawn when tuning enabled)
 volatile fix15 detected_freq = 0; // current frequency being played
@@ -343,10 +357,18 @@ static inline void update_tuning_params(void) {
   curr_tuning_freq = multfix15(freq_at_octave, center_freq_ratio) ;
 
   // calculate the y-values of the horizontal line for tuning
-  ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
-  lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
-  ubound_y = freq_2_spectro(ubound_freq) + 1 ;
-  lbound_y = freq_2_spectro(lbound_freq) - 1 ;
+  ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound in frequency, for the actual calculation
+  lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound in frequency
+
+  int padding = 4 ; // default padding is 3 pixels for 4 
+  if (OCTAVE > 4) {
+    padding <<= OCTAVE - 4 ; // double padding for every octave above
+  }
+  else if (OCTAVE < 4) {
+    padding >>= 4 - OCTAVE ; // halve padding for every octave below
+  }
+  ubound_y = freq_2_spectro(ubound_freq) + padding ; // upper bound in drawing, visually padded for separation
+  lbound_y = freq_2_spectro(lbound_freq) - padding ; // lower bound in drawing
 
   fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
   time_x = SPECTRO_X_START;
@@ -796,6 +818,10 @@ static PT_THREAD(protothread_tune_debouncing(struct pt *pt))
             TUNE_STATE = PRESSED ;
             prev_state = MAYBE_PRESSED;
             PT_SEM_SIGNAL(pt, &tune_btn_pressed) ; // send flag, potFSM thread will be activated
+            update_tuning_params() ; // update the tuning parameters upon current note
+            // draw initial bounds 
+            drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, RED) ; // upper
+            drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, RED) ; // lower
             PT_YIELD_usec(200000);
             begin_time = time_us_32();
         }
@@ -869,6 +895,7 @@ static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
                         SCALING_FACTOR = 40.0 ; // set sensitivity automatically higher
                     } else {
                         current_source = SOURCE_MIC;
+                        SCALING_FACTOR = 6.0 ; // set sensitivity automatically lower
                     }
                     // Request the hardware switch on Core 0 w/flag
                     request_source_switch = 1; 
@@ -1199,9 +1226,13 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
           setCursor(300, 10);
           if (current_source == SOURCE_MIC) {
             writeString("Input: Mic    ");
+            strcpy(pot_state_buffer, "Sensitivity: ") ;
+            sprintf(pot_text_buffer, "%d", (int)SCALING_FACTOR) ;
           }
           else {
             writeString("Input: Line-in");
+            strcpy(pot_state_buffer, "Sensitivity: ") ;
+            sprintf(pot_text_buffer, "%d", (int)SCALING_FACTOR) ;
           }
           prev_source_drawn = current_source;
         }
