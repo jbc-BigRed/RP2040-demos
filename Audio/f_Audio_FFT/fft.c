@@ -326,6 +326,32 @@ static inline uint8_t read_encoder_terminals(void) {
     return (a | (b << 1)) & 0x3; // combines a and b into one packet: 0xba, matches the source files
 }
 
+// updates the tuning parameters when octave or center frequency are changed
+static inline void update_tuning_params(void) {
+  // dont need to clamp curr_tuning_note_idx since it is bounded by the literal numbers of keys on the keypad
+
+  // get note and octave
+  fix15 base_note = note_frequencies[curr_tuning_note_idx] ; // the desired note in C4
+  int octave_offset = OCTAVE - 4 ; // since we are centered around C4
+
+  // recalculate tuning note
+  base_note = note_frequencies[curr_tuning_note_idx] ; // base note selected to tune to in octave 4, 440 tuning
+  float octave_multiplier = pow(2.0, (float)(octave_offset)) ; // 2^octave difference
+  fix15 freq_at_octave = multfix15(base_note, float2fix15(octave_multiplier)) ; // base note frequency * 2^octave difference
+
+  fix15 center_freq_ratio = divfix(int2fix15(CENTER_FREQ), int2fix15(440)) ; // the ratio of change to multiply the note to modulate center freq
+  curr_tuning_freq = multfix15(freq_at_octave, center_freq_ratio) ;
+
+  // calculate the y-values of the horizontal line for tuning
+  ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
+  lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
+  ubound_y = freq_2_spectro(ubound_freq) + 1 ;
+  lbound_y = freq_2_spectro(lbound_freq) - 1 ;
+
+  fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
+  time_x = SPECTRO_X_START;
+}
+
 // Peforms an in-place FFT. For more information about how this
 // algorithm works, please see https://vanhunteradams.com/FFT/FFT.html
 void FFTfix(fix15 fr[], fix15 fi[]) {
@@ -593,9 +619,6 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
     static short int prev_state;
     static int spare_time;
     static uint32_t begin_time;
-    static float octave_multiplier ;
-    static fix15 freq_at_octave ;
-    static fix15 base_note ;
 
     while(1) {
       begin_time = time_us_32();
@@ -637,31 +660,15 @@ static PT_THREAD (protothread_keypad_debounce(struct pt *pt))
         case MAYBE_PRESSED :
             if (i == possible) {
             KEYPAD_STATE = PRESSED ;
-            // only alter stuff if in tuning mode
-            if (tuning_flag) {
-              strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
-
-              curr_tuning_note_idx = i ; // set the i to the global index for the current note selected
-              base_note = note_frequencies[curr_tuning_note_idx] ; // base note selected to tune to in octave 4, 440 tuning
-              
-              // octave multiplier to account for shifting octaves
-              //(OCTAVE < 4) ? (octave_multiplier = pow(2.0, float(OCTAVE))) : (octave_multiplier = pow(2.0, float(OCTAVE - 4))) ;
-              octave_multiplier = pow(2.0, (float)(OCTAVE - 4)) ;
-              freq_at_octave = multfix15(base_note, float2fix15(octave_multiplier)) ;
-
-              // current frequency to tune to, accounts for shift in center_freq
-              curr_tuning_freq = freq_at_octave + (int2fix15(440) - int2fix15(CENTER_FREQ)); 
-
-              // reset cursor and black out screen
-              fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK) ;
-              time_x = SPECTRO_X_START;
-            }
-
-            // calculate the y-values of the horizontal line for tuning
-            ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
-            lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
-            ubound_y = freq_2_spectro(ubound_freq) + 1 ;
-            lbound_y = freq_2_spectro(lbound_freq) - 1;
+              // only alter stuff if in tuning mode
+              if (tuning_flag) {
+                strcpy(current_note, notes[i]) ; // write desired note to the desired_note_buffer
+                curr_tuning_note_idx = i ; // set the i to the global index for the current note selected
+                update_tuning_params() ; // update the tuning parameters upon current note
+                // draw initial bounds 
+                drawHLine(SPECTRO_X_START, ubound_y, SPECTRO_WIDTH, RED) ; // upper
+                drawHLine(SPECTRO_X_START, lbound_y, SPECTRO_WIDTH, RED) ; // lower
+              }
             }
             else {
             KEYPAD_STATE = NOT_PRESSED ;
@@ -859,12 +866,13 @@ static PT_THREAD(protothread_source_select_debouncing(struct pt *pt))
                     // toggle source var
                     if (current_source == SOURCE_MIC) {
                         current_source = SOURCE_LINE;
+                        SCALING_FACTOR = 40.0 ; // set sensitivity automatically higher
                     } else {
                         current_source = SOURCE_MIC;
                     }
                     // Request the hardware switch on Core 0 w/flag
                     request_source_switch = 1; 
-                    PT_YIELD_usec(200000);
+                    PT_YIELD_usec(200000); // make sure that the button presses dont switch when unintended bc they are very bouncy
                     begin_time = time_us_32();
                     // BLACK OUT SCREEN AND RESET CURSOR
                     fillRect(SPECTRO_X_START, SPECTRO_Y_START, SPECTRO_WIDTH, SPECTRO_HEIGHT, BLACK);
@@ -918,7 +926,22 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
 
     begin_time = time_us_32() ; // idk where to put this
 
-    P_CYCLE_STATE = (P_CYCLE_STATE + 1) % 5 ; // states 0 through 4, will loop when state reaches 4
+    if (P_CYCLE_STATE == MOD_SCALING_FACTOR) { // if the current state is the fourth state
+      if (T_CYCLE_STATE == TUNE_EN) { // check if tuning is enabled
+        P_CYCLE_STATE += 1 ; // continue to changing the octave if tuning enabled
+      }
+      else {
+        P_CYCLE_STATE = INIT ; // reset to standby if the tuning is not enabled
+      }
+    }
+    else if (P_CYCLE_STATE == MOD_OCTAVE) { // if now at the last state while tuning is enabled (will only reach this state if tuning is enabled)
+      P_CYCLE_STATE = INIT ;
+    }
+    else {
+      P_CYCLE_STATE++ ;
+    }
+
+    //P_CYCLE_STATE = (P_CYCLE_STATE + 1) % 5 ; // states 0 through 4, will loop when state reaches 4
 
     switch (P_CYCLE_STATE) { // based on state display the currrent state and determine the function of the potentiometer
       case INIT :
@@ -938,7 +961,7 @@ static PT_THREAD(protothread_potFSM(struct pt *pt))
       break ;
       case MOD_SCALING_FACTOR :
         strcpy(pot_state_buffer, "Sensitivity: ") ;
-        sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
+        sprintf(pot_text_buffer, "%d", (int)SCALING_FACTOR) ;
         pot_funct = MOD_SCALING_FACTOR ;
       break ;
       case MOD_OCTAVE :
@@ -1019,8 +1042,6 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
     static uint32_t begin_time;
     static uint8_t output;
     static enum encoder_action result;
-    static fix15 freq_at_octave ;
-    static fix15 base_note ;
     
     while(1) {
         begin_time = time_us_32();
@@ -1045,38 +1066,17 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
                     case MOD_CENTER_FREQ:
                       (CENTER_FREQ < MAX_CENTER_FREQ) ? CENTER_FREQ++ : (CENTER_FREQ = MAX_CENTER_FREQ)  ;
                       sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
-
-                      // recalculate tuning note
-                      base_note = note_frequencies[curr_tuning_note_idx] ; // base note selected to tune to in octave 4, 440 tuning
-                      octave_multiplier = pow(2.0, (float)(OCTAVE - 4)) ;
-                      freq_at_octave = multfix15(base_note, float2fix15(octave_multiplier)) ;
-                      curr_tuning_freq = freq_at_octave + (int2fix15(440) - int2fix15(CENTER_FREQ));
-                      // calculate the y-values of the horizontal line for tuning
-                      ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
-                      lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
-                      ubound_y = freq_2_spectro(ubound_freq) + 1 ;
-                      lbound_y = freq_2_spectro(lbound_freq) - 1;
+                      update_tuning_params() ;
 
                       break ;
                     case MOD_SCALING_FACTOR:
-                      (SCALING_FACTOR < MAX_SCALING_FACTOR) ? SCALING_FACTOR += 0.5 : (SCALING_FACTOR = MAX_SCALING_FACTOR) ;
-                      sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
+                      (SCALING_FACTOR < MAX_SCALING_FACTOR) ? SCALING_FACTOR += 1.0 : (SCALING_FACTOR = MAX_SCALING_FACTOR) ;
+                      sprintf(pot_text_buffer, "%d", (int)SCALING_FACTOR) ;
                       break ;
                     case MOD_OCTAVE :
                       (OCTAVE < MAX_OCTAVE) ? OCTAVE += 1 : (OCTAVE = MAX_OCTAVE) ;
                       sprintf(pot_text_buffer, "%d", OCTAVE) ;
-
-                      // recalculate tuning note
-                      base_note = note_frequencies[curr_tuning_note_idx] ; // base note selected to tune to in octave 4, 440 tuning
-                      octave_multiplier = pow(2.0, (float)(OCTAVE - 4)) ;
-                      freq_at_octave = multfix15(base_note, float2fix15(octave_multiplier)) ;
-                      curr_tuning_freq = freq_at_octave + (int2fix15(440) - int2fix15(CENTER_FREQ));
-                      // calculate the y-values of the horizontal line for tuning
-                      ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
-                      lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
-                      ubound_y = freq_2_spectro(ubound_freq) + 1 ;
-                      lbound_y = freq_2_spectro(lbound_freq) - 1;
-
+                      update_tuning_params() ;
                     break ;
                     case INIT :
                         //strcpy(pot_text_buffer, "") ;
@@ -1092,37 +1092,17 @@ static PT_THREAD (protothread_encoder(struct pt *pt))
                     case MOD_CENTER_FREQ:
                       (CENTER_FREQ > MIN_CENTER_FREQ) ? CENTER_FREQ-- : (CENTER_FREQ = MIN_CENTER_FREQ) ;
                       sprintf(pot_text_buffer, "%d", CENTER_FREQ) ;
-
-                      // recalculate tuning note
-                      base_note = note_frequencies[curr_tuning_note_idx] ; // base note selected to tune to in octave 4, 440 tuning
-                      octave_multiplier = pow(2.0, (float)(OCTAVE - 4)) ;
-                      freq_at_octave = multfix15(base_note, float2fix15(octave_multiplier)) ;
-                      curr_tuning_freq = freq_at_octave + (int2fix15(440) - int2fix15(CENTER_FREQ));
-                      // calculate the y-values of the horizontal line for tuning
-                      ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
-                      lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
-                      ubound_y = freq_2_spectro(ubound_freq) + 1 ;
-                      lbound_y = freq_2_spectro(lbound_freq) - 1;
+                      update_tuning_params() ;
 
                       break ;
                     case MOD_SCALING_FACTOR:
-                      (SCALING_FACTOR > MIN_SCALING_FACTOR) ? SCALING_FACTOR -= 0.5 : (SCALING_FACTOR = MIN_SCALING_FACTOR);
-                      sprintf(pot_text_buffer, "%f", SCALING_FACTOR) ;
+                      (SCALING_FACTOR > MIN_SCALING_FACTOR) ? SCALING_FACTOR -= 1.0 : (SCALING_FACTOR = MIN_SCALING_FACTOR);
+                      sprintf(pot_text_buffer, "%d", (int)SCALING_FACTOR) ;
                       break ;
                     case MOD_OCTAVE :
                       (OCTAVE > MIN_OCTAVE) ? OCTAVE -= 1 : (OCTAVE = MIN_OCTAVE) ;
                       sprintf(pot_text_buffer, "%d", OCTAVE) ;
-
-                      // recalculate tuning note
-                      base_note = note_frequencies[curr_tuning_note_idx] ; // base note selected to tune to in octave 4, 440 tuning
-                      octave_multiplier = pow(2.0, (float)(OCTAVE - 4)) ;
-                      freq_at_octave = multfix15(base_note, float2fix15(octave_multiplier)) ;
-                      curr_tuning_freq = freq_at_octave + (int2fix15(440) - int2fix15(CENTER_FREQ));
-                      // calculate the y-values of the horizontal line for tuning
-                      ubound_freq = multfix15(curr_tuning_freq, cents_padding) ; // upper bound
-                      lbound_freq = divfix(curr_tuning_freq, cents_padding) ; // lower bound
-                      ubound_y = freq_2_spectro(ubound_freq) + 1 ;
-                      lbound_y = freq_2_spectro(lbound_freq) - 1;
+                      update_tuning_params() ;
                       
                       break ;
                     case INIT :
