@@ -1226,11 +1226,11 @@ static PT_THREAD (protothread_noncrit_vga(struct pt *pt))
           setCursor(300, 10);
           if (current_source == SOURCE_MIC) {
             writeString("Input: Mic    ");
-            strcpy(pot_state_buffer, "Sensitivity: ") ;
-            sprintf(pot_text_buffer, "%d", (int)SCALING_FACTOR) ;
           }
           else {
             writeString("Input: Line-in");
+          }
+          if (P_CYCLE_STATE == MOD_SCALING_FACTOR) {
             strcpy(pot_state_buffer, "Sensitivity: ") ;
             sprintf(pot_text_buffer, "%d", (int)SCALING_FACTOR) ;
           }
